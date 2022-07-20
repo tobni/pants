@@ -2311,6 +2311,7 @@ def test_dependency_injection(dependencies_rule_runner: RuleRunner) -> None:
                 """\
                 smalltalk_libraries(name='target', sources=['*.st'])
                 target(name='provided')
+                target(name='injected2')
                 """
             ),
         }
