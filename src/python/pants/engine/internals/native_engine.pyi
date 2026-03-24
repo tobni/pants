@@ -22,6 +22,8 @@ from pants.engine.fs import (
     PathMetadataRequest,
     PathMetadataResult,
     Paths,
+    PeekDigest,
+    PeekDigestResult,
 )
 from pants.engine.internals.docker import DockerResolveImageRequest, DockerResolveImageResult
 from pants.engine.internals.native_dep_inference import (
@@ -588,6 +590,7 @@ async def execute_process(
     process: Process, process_execution_environment: ProcessExecutionEnvironment
 ) -> FallibleProcessResult: ...
 async def digest_subset_to_digest(digest_subset: DigestSubset) -> Digest: ...
+async def peek_digest(peek_digest: PeekDigest) -> PeekDigestResult: ...
 async def session_values() -> SessionValues: ...
 async def run_id() -> RunId: ...
 async def interactive_process(

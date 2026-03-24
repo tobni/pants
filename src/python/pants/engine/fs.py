@@ -228,6 +228,27 @@ class DigestSubset:
 
 
 @dataclass(frozen=True)
+class PeekDigest:
+    """Read a byte range from a file in the content-addressable store.
+
+    Takes a FileDigest (obtainable via DigestEntries) and reads `length` bytes starting at `offset`.
+    This avoids loading the entire file content into memory, which is useful for large files where
+    only a small prefix is needed (e.g. to check magic bytes).
+    """
+
+    file_digest: FileDigest
+    offset: int = 0
+    length: int = 1
+
+
+@dataclass(frozen=True)
+class PeekDigestResult:
+    """The bytes read from a PeekDigest request."""
+
+    data: bytes
+
+
+@dataclass(frozen=True)
 class DownloadFile:
     """Retrieve the contents of a file via an HTTP GET request or directly for local file:// URLs.
 

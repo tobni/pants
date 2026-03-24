@@ -221,6 +221,7 @@ impl PyTypes {
         parsed_javascript_deps_result: &Bound<'_, PyType>,
         parsed_dockerfile_info_result: &Bound<'_, PyType>,
         parsed_javascript_deps_candidate_result: &Bound<'_, PyType>,
+        peek_digest_result: &Bound<'_, PyType>,
         py: Python,
     ) -> Self {
         Self(SyncMutex::new(Some(Types {
@@ -264,6 +265,7 @@ impl PyTypes {
             parsed_javascript_deps_candidate_result: TypeId::new(
                 parsed_javascript_deps_candidate_result,
             ),
+            peek_digest_result: TypeId::new(peek_digest_result),
             deps_request: TypeId::new(
                 &py.get_type::<externs::dep_inference::PyNativeDependenciesRequest>(),
             ),

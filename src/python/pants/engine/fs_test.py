@@ -41,6 +41,8 @@ from pants.engine.fs import (
     PathGlobsAndRoot,
     PathMetadataRequest,
     PathMetadataResult,
+    PeekDigest,
+    PeekDigestResult,
     RemovePrefix,
     Snapshot,
     SnapshotDiff,
@@ -70,6 +72,7 @@ def rule_runner() -> RuleRunner:
             QueryRule(Snapshot, [DigestSubset]),
             QueryRule(Snapshot, [PathGlobs]),
             QueryRule(PathMetadataResult, [PathMetadataRequest]),
+            QueryRule(PeekDigestResult, [PeekDigest]),
         ],
         isolated_local_store=True,
     )
@@ -1628,3 +1631,37 @@ def test_path_metadata_request_outside_buildroot(rule_runner: RuleRunner) -> Non
         assert m5.path == str(base_path / "sub-dir")
         assert m5.kind == PathMetadataKind.DIRECTORY
         assert m5.symlink_target is None
+
+
+def test_peek_digest_reads_prefix(rule_runner: RuleRunner) -> None:
+    content = b"\x7fELF rest of the file content here"
+    digest = rule_runner.request(Digest, [CreateDigest([FileContent("binary", content)])])
+    entries = rule_runner.request(DigestEntries, [digest])
+    file_entry = [e for e in entries if isinstance(e, FileEntry)][0]
+
+    result = rule_runner.request(PeekDigestResult, [PeekDigest(file_entry.file_digest, length=4)])
+    assert result.data == b"\x7fELF"
+
+
+def test_peek_digest_with_offset(rule_runner: RuleRunner) -> None:
+    content = b"Hello, World!"
+    digest = rule_runner.request(Digest, [CreateDigest([FileContent("greeting", content)])])
+    entries = rule_runner.request(DigestEntries, [digest])
+    file_entry = [e for e in entries if isinstance(e, FileEntry)][0]
+
+    result = rule_runner.request(
+        PeekDigestResult, [PeekDigest(file_entry.file_digest, offset=7, length=5)]
+    )
+    assert result.data == b"World"
+
+
+def test_peek_digest_clamps_to_file_size(rule_runner: RuleRunner) -> None:
+    content = b"short"
+    digest = rule_runner.request(Digest, [CreateDigest([FileContent("small", content)])])
+    entries = rule_runner.request(DigestEntries, [digest])
+    file_entry = [e for e in entries if isinstance(e, FileEntry)][0]
+
+    result = rule_runner.request(
+        PeekDigestResult, [PeekDigest(file_entry.file_digest, length=1000)]
+    )
+    assert result.data == b"short"

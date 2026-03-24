@@ -10,6 +10,7 @@ pub struct Types {
     pub paths: TypeId,
     pub path_metadata_request: TypeId,
     pub path_metadata_result: TypeId,
+    pub peek_digest_result: TypeId,
     pub file_content: TypeId,
     pub file_entry: TypeId,
     pub symlink_entry: TypeId,

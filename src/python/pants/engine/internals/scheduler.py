@@ -33,6 +33,7 @@ from pants.engine.fs import (
     PathMetadataRequest,
     PathMetadataResult,
     Paths,
+    PeekDigestResult,
     Snapshot,
     SymlinkEntry,
 )
@@ -187,6 +188,7 @@ class Scheduler:
             parsed_javascript_deps_result=NativeJavascriptFileDependencies,
             parsed_dockerfile_info_result=NativeDockerfileInfo,
             parsed_javascript_deps_candidate_result=JavascriptDependencyCandidate,
+            peek_digest_result=PeekDigestResult,
         )
         remoting_options = PyRemotingOptions(
             provider=execution_options.remote_provider.value,

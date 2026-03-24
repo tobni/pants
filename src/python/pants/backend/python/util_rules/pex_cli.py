@@ -16,14 +16,10 @@ from pants.backend.python.util_rules.pex_environment import PexEnvironment, PexS
 from pants.core.goals.resolves import ExportableTool
 from pants.core.util_rules import adhoc_binaries, external_tool
 from pants.core.util_rules.adhoc_binaries import PythonBuildStandaloneBinary
-from pants.core.util_rules.external_tool import (
-    DownloadedExternalTool,
-    TemplatedExternalTool,
-    download_external_tool,
-)
-from pants.engine.fs import CreateDigest, Digest, Directory, MergeDigests
+from pants.core.util_rules.external_tool import TemplatedExternalTool, download_external_tool
+from pants.engine.fs import CreateDigest, Digest, Directory, FileEntry, MergeDigests, PeekDigest
 from pants.engine.internals.selectors import concurrently
-from pants.engine.intrinsics import create_digest, merge_digests
+from pants.engine.intrinsics import create_digest, get_digest_entries, merge_digests, peek_digest
 from pants.engine.platform import Platform
 from pants.engine.process import Process, ProcessCacheScope
 from pants.engine.rules import collect_rules, rule
@@ -116,14 +112,33 @@ class PexCliProcess:
             raise ValueError("`--pex-root` flag not allowed. We set its value for you.")
 
 
-class PexPEX(DownloadedExternalTool):
+_ELF_MAGIC = b"\x7fELF"
+
+
+@dataclass(frozen=True)
+class PexPEX:
     """The Pex PEX binary."""
+
+    digest: Digest
+    exe: str
+    is_scie: bool
 
 
 @rule
 async def download_pex_pex(pex_cli: PexCli, platform: Platform) -> PexPEX:
     pex_pex = await download_external_tool(pex_cli.get_request(platform))
-    return PexPEX(digest=pex_pex.digest, exe=pex_pex.exe)
+    digest_entries = await get_digest_entries(pex_pex.digest)
+    exe_path = pex_pex.exe.lstrip("./")
+    file_entry = None
+    for entry in digest_entries:
+        if isinstance(entry, FileEntry) and entry.path == exe_path:
+            file_entry = entry
+            break
+    if file_entry is None:
+        raise ValueError(f"Could not find {exe_path} in downloaded PEX digest")
+    header = await peek_digest(PeekDigest(file_entry.file_digest, length=4))
+    is_scie = header.data == _ELF_MAGIC
+    return PexPEX(digest=pex_pex.digest, exe=pex_pex.exe, is_scie=is_scie)
 
 
 @rule
@@ -199,13 +214,20 @@ async def setup_pex_cli_process(
     ]
 
     complete_pex_env = pex_env.in_sandbox(working_directory=None)
-    normalized_argv = complete_pex_env.create_argv(pex_pex.exe, *args, python=bootstrap_python)
+    normalized_argv = complete_pex_env.create_argv(
+        pex_pex.exe,
+        *args,
+        python=None if pex_pex.is_scie else bootstrap_python,
+        is_scie=pex_pex.is_scie,
+    )
     env = {
         **complete_pex_env.environment_dict(python_configured=True),
         **python_native_code.subprocess_env_vars,
         **(request.extra_env or {}),
         # If a subcommand is used, we need to use the `pex3` console script.
         **({"PEX_SCRIPT": "pex3"} if request.subcommand else {}),
+        # Scie PEX binaries have multiple entry points and need to know which one to boot.
+        **({"SCIE_BOOT": "pex3" if request.subcommand else "pex"} if pex_pex.is_scie else {}),
     }
 
     return Process(

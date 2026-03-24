@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from pants.backend.python.util_rules import pex_cli
-from pants.backend.python.util_rules.pex_cli import PexCliProcess
+from pants.backend.python.util_rules.pex_cli import PexCliProcess, PexPEX
 from pants.engine.fs import DigestContents
 from pants.engine.process import Process
 from pants.engine.rules import QueryRule
@@ -19,6 +19,7 @@ def rule_runner() -> RuleRunner:
         rules=[
             *pex_cli.rules(),
             QueryRule(Process, (PexCliProcess,)),
+            QueryRule(PexPEX, ()),
         ]
     )
 
@@ -52,3 +53,9 @@ def test_pass_global_args_to_pex_cli_subsystem(tmp_path: Path, rule_runner: Rule
         [PexCliProcess(subcommand=(), extra_args=(), description="")],
     )
     assert "--foo=bar --baz --spam=eggs" in proc.argv
+
+
+def test_default_pex_is_not_scie(rule_runner: RuleRunner) -> None:
+    rule_runner.set_options([], env_inherit={"PATH", "PYENV_ROOT", "HOME"})
+    pex_pex = rule_runner.request(PexPEX, [])
+    assert pex_pex.is_scie is False

@@ -217,13 +217,16 @@ class CompletePexEnvironment:
         pex_filepath: str,
         *args: str,
         python: PythonExecutable | PythonBuildStandaloneBinary | None = None,
+        is_scie: bool = False,
     ) -> tuple[str, ...]:
-        python_exe = python or self._pex_environment.bootstrap_python
         pex_relpath = (
             os.path.relpath(pex_filepath, self._working_directory)
             if self._working_directory
             else pex_filepath
         )
+        if is_scie:
+            return (f"./{pex_relpath}", *args)
+        python_exe = python or self._pex_environment.bootstrap_python
         return (python_exe.path, pex_relpath, *args)
 
     def environment_dict(self, *, python_configured: bool) -> Mapping[str, str]:

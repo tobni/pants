@@ -20,6 +20,8 @@ from pants.engine.fs import (
     PathMetadataRequest,
     PathMetadataResult,
     Paths,
+    PeekDigest,
+    PeekDigestResult,
     RemovePrefix,
     Snapshot,
 )
@@ -126,6 +128,11 @@ async def execute_process_with_retry(req: ProcessWithRetries) -> ProcessResultWi
 @rule
 async def digest_subset_to_digest(digest_subset: DigestSubset) -> Digest:
     return await native_engine.digest_subset_to_digest(digest_subset)
+
+
+@rule
+async def peek_digest(peek_digest: PeekDigest) -> PeekDigestResult:
+    return await native_engine.peek_digest(peek_digest)
 
 
 @rule

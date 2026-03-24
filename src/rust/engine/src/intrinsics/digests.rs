@@ -11,7 +11,7 @@ use fs::{
 };
 use hashing::{Digest, EMPTY_DIGEST};
 use pyo3::prelude::{PyModule, PyRef, PyResult, Python, pyfunction, wrap_pyfunction};
-use pyo3::types::{PyAnyMethods, PyModuleMethods, PyTuple, PyTypeMethods};
+use pyo3::types::{PyAnyMethods, PyBytes, PyModuleMethods, PyTuple, PyTypeMethods};
 use pyo3::{Bound, IntoPyObject, PyAny};
 use store::{SnapshotOps, SubsetParams};
 
@@ -38,6 +38,7 @@ pub fn register(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(merge_digests, m)?)?;
     m.add_function(wrap_pyfunction!(path_globs_to_digest, m)?)?;
     m.add_function(wrap_pyfunction!(path_globs_to_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(peek_digest, m)?)?;
     m.add_function(wrap_pyfunction!(remove_prefix, m)?)?;
     m.add_function(wrap_pyfunction!(path_metadata_request, m)?)?;
 
@@ -369,6 +370,43 @@ fn digest_subset_to_digest(digest_subset: Value) -> PyGeneratorResponseNativeCal
         Ok::<_, Failure>(Python::attach(|py| {
             Snapshot::store_directory_digest(py, digest)
         })?)
+    })
+}
+
+#[pyfunction]
+fn peek_digest(request: Value) -> PyGeneratorResponseNativeCall {
+    PyGeneratorResponseNativeCall::new(async move {
+        let context = task_get_context();
+
+        let (file_digest, offset, length) = Python::attach(|py| {
+            let py_request = request.bind(py);
+            let file_digest: PyRef<PyFileDigest> = externs::getattr(py_request, "file_digest")
+                .map_err(|e| throw(format!("Failed to get file_digest: {e}")))?;
+            let offset: usize = externs::getattr(py_request, "offset")
+                .map_err(|e| throw(format!("Failed to get offset: {e}")))?;
+            let length: usize = externs::getattr(py_request, "length")
+                .map_err(|e| throw(format!("Failed to get length: {e}")))?;
+            let res: NodeResult<_> = Ok((file_digest.0, offset, length));
+            res
+        })?;
+
+        let data = context
+            .core
+            .store()
+            .load_file_bytes_with(file_digest, move |bytes| {
+                let end = std::cmp::min(offset + length, bytes.len());
+                let start = std::cmp::min(offset, bytes.len());
+                bytes::Bytes::copy_from_slice(&bytes[start..end])
+            })
+            .await?;
+
+        Ok::<_, Failure>(Python::attach(|py| {
+            let py_bytes = PyBytes::new(py, &data);
+            let py_type = context.core.types.peek_digest_result.as_py_type(py);
+            let args = PyTuple::new(py, &[py_bytes.into_any()]).unwrap();
+            let result = py_type.call1(args).unwrap();
+            Value::from(&result)
+        }))
     })
 }
 

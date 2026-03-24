@@ -383,33 +383,37 @@ async def find_interpreter(
         return python
 
     formatted_constraints = " OR ".join(str(constraint) for constraint in interpreter_constraints)
-    result = await fallible_to_exec_result_or_raise(
+
+    inspect_result = await fallible_to_exec_result_or_raise(
         **implicitly(
             PexCliProcess(
                 description=f"Find interpreter for constraints: {formatted_constraints}",
-                subcommand=(),
-                # Here, we run the Pex CLI with no requirements, which just selects an interpreter.
-                # Normally, this would start an isolated repl. By passing `--`, we force the repl to
-                # instead act as an interpreter (the selected one) and tell us about itself. The upshot
-                # is we run the Pex interpreter selection logic unperturbed but without resolving any
-                # distributions.
+                subcommand=("interpreter", "inspect"),
                 extra_args=(
                     *interpreter_constraints.generate_pex_arg_list(),
-                    "--",
+                    "-v",
+                ),
+                level=LogLevel.DEBUG,
+                cache_scope=env_target.executable_search_path_cache_scope(),
+            )
+        )
+    )
+    maybe_log_pex_stderr(inspect_result.stderr, pex_subsystem.verbosity)
+    first_line = inspect_result.stdout.decode().strip().splitlines()[0]
+    interpreter_info = json.loads(first_line)
+    path = os.path.realpath(interpreter_info.get("base_interpreter") or interpreter_info["path"])
+
+    hash_result = await fallible_to_exec_result_or_raise(
+        **implicitly(
+            Process(
+                argv=(
+                    path,
                     "-c",
-                    # N.B.: The following code snippet must be compatible with Python 2.7 and
-                    # Python 3.5+.
-                    #
-                    # When hashing, we pick 8192 for efficiency of reads and fingerprint updates
-                    # (writes) since it's a common OS buffer size and an even multiple of the
-                    # hash block size.
                     dedent(
                         """\
                     import hashlib, os, sys
 
                     python = os.path.realpath(sys.executable)
-                    print(python)
-
                     hasher = hashlib.sha256()
                     with open(python, "rb") as fp:
                       for chunk in iter(lambda: fp.read(8192), b""):
@@ -418,14 +422,13 @@ async def find_interpreter(
                     """
                     ),
                 ),
+                description=f"Fingerprint interpreter {path}",
                 level=LogLevel.DEBUG,
                 cache_scope=env_target.executable_search_path_cache_scope(),
             )
         )
     )
-    path, fingerprint = result.stdout.decode().strip().splitlines()
-
-    maybe_log_pex_stderr(result.stderr, pex_subsystem.verbosity)
+    fingerprint = hash_result.stdout.decode().strip()
 
     return PythonExecutable(path=path, fingerprint=fingerprint)
 
