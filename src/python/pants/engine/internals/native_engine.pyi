@@ -541,6 +541,109 @@ class AsyncFieldMixin(Field):
     def __ne__(self, other: Any) -> bool: ...
     def __repr__(self) -> str: ...
 
+class SourcesField(AsyncFieldMixin):
+    """A field for the sources that a target owns.
+
+    When defining a new sources field, you should subclass `MultipleSourcesField` or
+    `SingleSourceField`, which set up the field's `alias` and data type / parsing. However, you
+    should use `tgt.get(SourcesField)` when you need to operate on all sources types, such as
+    with `HydrateSourcesRequest`, so that both subclasses work.
+
+    Subclasses may set the following class properties:
+
+    - `expected_file_extensions` -- A tuple of strings containing the expected file extensions for
+        source files. The default is no expected file extensions.
+    - `expected_num_files` -- An integer or range stating the expected total number of source
+        files. The default is no limit on the number of source files.
+    - `uses_source_roots` -- Whether the concept of "source root" pertains to the source files
+        referenced by this field.
+    - `default` -- A default value for this field.
+    - `default_glob_match_error_behavior` -- Advanced option, should very rarely be used. Override
+        glob match error behavior when using the default value. If setting this to
+        `GlobMatchErrorBehavior.ignore`, make sure you have other validation in place in case the
+        default glob doesn't match any files, if required, to alert the user appropriately.
+    """
+
+    expected_file_extensions: ClassVar[tuple[str, ...] | None] = None
+    expected_num_files: ClassVar[int | range | None] = None
+    uses_source_roots: ClassVar[bool] = True
+    default: ClassVar[Any] = None
+    default_glob_match_error_behavior: ClassVar[Any] = None
+
+    @property
+    def globs(self) -> tuple[str, ...]: ...
+    def validate_resolved_files(self, files: Sequence[str]) -> None: ...
+    @staticmethod
+    def prefix_glob_with_dirpath(dirpath: str, glob: str) -> str: ...
+    def _prefix_glob_with_address(self, glob: str) -> str: ...
+    @classmethod
+    def can_generate(
+        cls, output_type: type[SourcesField], union_membership: Any
+    ) -> bool: ...
+    def path_globs(self, unmatched_build_file_globs: Any) -> Any: ...
+    @property
+    def filespec(self) -> dict[str, list[str]]: ...
+    @property
+    def filespec_matcher(self) -> Any: ...
+
+class MultipleSourcesField(SourcesField):
+    """The `sources: list[str]` field.
+
+    See the docstring for `SourcesField` for some class properties you can set, such as
+    `expected_file_extensions`.
+
+    When you need to get the sources for all targets, use `tgt.get(SourcesField)` rather than
+    `tgt.get(MultipleSourcesField)`.
+    """
+
+    ban_subdirectories: ClassVar[bool] = False
+
+    @property
+    def globs(self) -> tuple[str, ...]: ...
+    @classmethod
+    def compute_value(
+        cls, raw_value: Iterable[str] | None, address: Address
+    ) -> tuple[str, ...] | None: ...
+
+class OptionalSingleSourceField(SourcesField):
+    """The `source: str` field.
+
+    See the docstring for `SourcesField` for some class properties you can set, such as
+    `expected_file_extensions`.
+
+    When you need to get the sources for all targets, use `tgt.get(SourcesField)` rather than
+    `tgt.get(OptionalSingleSourceField)`.
+
+    Use `SingleSourceField` if the source must exist.
+    """
+
+    @property
+    def globs(self) -> tuple[str, ...]: ...
+    @property
+    def file_path(self) -> str | None: ...
+    @classmethod
+    def compute_value(cls, raw_value: str | None, address: Address) -> str | None: ...
+
+class SingleSourceField(OptionalSingleSourceField):
+    """The `source: str` field.
+
+    Unlike `OptionalSingleSourceField`, the `.value` must be defined, whether by setting the
+    `default` or making the field `required`.
+
+    See the docstring for `SourcesField` for some class properties you can set, such as
+    `expected_file_extensions`.
+
+    When you need to get the sources for all targets, use `tgt.get(SourcesField)` rather than
+    `tgt.get(SingleSourceField)`.
+    """
+
+    required: ClassVar[bool] = True
+    expected_num_files: ClassVar[int] = 1
+    value: str
+
+    @property
+    def file_path(self) -> str: ...
+
 # ------------------------------------------------------------------------------
 # FS
 # ------------------------------------------------------------------------------

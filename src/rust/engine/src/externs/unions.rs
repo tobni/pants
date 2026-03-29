@@ -161,7 +161,7 @@ impl UnionMembership {
 }
 
 impl UnionMembership {
-    fn get_members_tuple<'a>(
+    pub fn get_members_tuple<'a>(
         &self,
         union_type: &'a Bound<PyType>,
     ) -> Option<PyResult<Bound<'a, PyTuple>>> {

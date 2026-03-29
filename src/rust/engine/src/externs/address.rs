@@ -437,7 +437,7 @@ fn split_on_longest_dir_prefix<'a, 'b>(
     matched
 }
 
-#[pyclass(name = "Address")]
+#[pyclass(name = "Address", frozen)]
 #[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Address {
     // NB: Field ordering is deliberate, so that Ord will roughly match `self.spec`.
@@ -847,6 +847,10 @@ impl Address {
 }
 
 impl Address {
+    pub fn spec_path_ref(&self) -> &std::path::Path {
+        &self.spec_path
+    }
+
     fn equal_without_parameters(&self, other: &Address) -> bool {
         self.spec_path == other.spec_path
             && self.target_name == other.target_name

@@ -11,7 +11,7 @@ use itertools::Itertools;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::{PyException, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyIterator, PyString, PyTuple, PyType};
+use pyo3::types::{PyIterator, PyList, PyString, PyTuple, PyType};
 
 use fs::{
     DirectoryDigest, EMPTY_DIRECTORY_DIGEST, FilespecMatcher, GlobExpansionConjunction, PathGlobs,
@@ -653,6 +653,23 @@ impl PyPathGlobs {
     pub fn as_path_globs(&self) -> &PathGlobs {
         &self.inner
     }
+
+    pub fn create(
+        globs: Vec<String>,
+        behavior: PyGlobMatchErrorBehavior,
+        conjunction: PyGlobExpansionConjunction,
+        description_of_origin: Option<String>,
+        py: Python,
+    ) -> PyResult<Self> {
+        let globs_list = PyList::new(py, &globs)?;
+        Self::__new__(
+            &globs_list.into_any(),
+            behavior,
+            conjunction,
+            description_of_origin,
+            py,
+        )
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -714,6 +731,12 @@ impl PyFilespecMatcher {
                 .filter(|p| self.0.matches(Path::new(p)))
                 .collect())
         })
+    }
+}
+
+impl PyFilespecMatcher {
+    pub fn create(includes: Vec<String>, excludes: Vec<String>, py: Python) -> PyResult<Self> {
+        Self::__new__(includes, excludes, py)
     }
 }
 

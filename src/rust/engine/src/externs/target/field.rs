@@ -13,102 +13,11 @@ use pyo3::types::PyType;
 use crate::externs::address::Address;
 use crate::python::PyComparedBool;
 
-use std::sync::OnceLock;
-
-static INVALID_FIELD_TYPE_EXCEPTION: OnceLock<Py<PyAny>> = OnceLock::new();
-static INVALID_FIELD_CHOICE_EXCEPTION: OnceLock<Py<PyAny>> = OnceLock::new();
-
-pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Field>()?;
-    m.add_class::<ScalarField>()?;
-    m.add_class::<SequenceField>()?;
-    m.add_class::<StringSequenceField>()?;
-    m.add_class::<AsyncFieldMixin>()?;
-    m.add_class::<NoFieldValue>()?;
-
-    m.add("NO_VALUE", NoFieldValue)?;
-
-    Ok(())
-}
-
-fn raise_invalid_field_type(
-    py: Python,
-    address: &Bound<PyAny>,
-    alias: &str,
-    raw_value: Option<&Bound<PyAny>>,
-    expected_type_desc: &str,
-) -> PyErr {
-    let get_exc = || -> PyResult<Bound<PyAny>> {
-        if let Some(exc) = INVALID_FIELD_TYPE_EXCEPTION.get() {
-            return Ok(exc.bind(py).clone());
-        }
-        let exc = py
-            .import("pants.engine.target")?
-            .getattr("InvalidFieldTypeException")?;
-        let _ = INVALID_FIELD_TYPE_EXCEPTION.set(exc.clone().unbind());
-        Ok(exc)
-    };
-    match get_exc() {
-        Ok(exc_cls) => {
-            let kwargs = pyo3::types::PyDict::new(py);
-            let _ = kwargs.set_item("expected_type", expected_type_desc);
-            match exc_cls.call((address, alias, raw_value), Some(&kwargs)) {
-                Ok(exc) => PyErr::from_value(exc),
-                Err(e) => e,
-            }
-        }
-        Err(e) => e,
-    }
-}
-
-fn validate_choices(
-    py: Python,
-    address: &Bound<PyAny>,
-    alias: &str,
-    values: &Bound<PyAny>,
-    valid_choices: &Bound<PyAny>,
-) -> PyResult<()> {
-    // valid_choices is either a tuple of values or an Enum type.
-    // If Enum, extract .value from each member.
-    let choices_set = pyo3::types::PySet::empty(py)?;
-    if valid_choices.is_instance_of::<pyo3::types::PyTuple>() {
-        for item in valid_choices.try_iter()? {
-            choices_set.add(item?)?;
-        }
-    } else {
-        // Assume Enum — iterate and extract .value
-        for member in valid_choices.try_iter()? {
-            let member = member?;
-            choices_set.add(member.getattr(intern!(py, "value"))?)?;
-        }
-    }
-    for choice in values.try_iter()? {
-        let choice = choice?;
-        if !choices_set.contains(&choice)? {
-            let get_exc = || -> PyResult<Bound<PyAny>> {
-                if let Some(exc) = INVALID_FIELD_CHOICE_EXCEPTION.get() {
-                    return Ok(exc.bind(py).clone());
-                }
-                let exc = py
-                    .import("pants.engine.target")?
-                    .getattr("InvalidFieldChoiceException")?;
-                let _ = INVALID_FIELD_CHOICE_EXCEPTION.set(exc.clone().unbind());
-                Ok(exc)
-            };
-            let exc_cls = get_exc()?;
-            let kwargs = pyo3::types::PyDict::new(py);
-            kwargs.set_item("valid_choices", &choices_set)?;
-            return Err(PyErr::from_value(
-                exc_cls.call((address, alias, &choice), Some(&kwargs))?,
-            ));
-        }
-    }
-    Ok(())
-}
+use super::util::{raise_invalid_field_type, validate_choices};
 
 #[pyclass(name = "_NoValue")]
 #[derive(Clone)]
-struct NoFieldValue;
+pub(super) struct NoFieldValue;
 
 #[pymethods]
 impl NoFieldValue {
@@ -122,8 +31,8 @@ impl NoFieldValue {
 }
 
 #[pyclass(subclass, frozen, module = "pants.engine.internals.native_engine")]
-pub struct Field {
-    value: Py<PyAny>,
+pub(crate) struct Field {
+    pub(crate) value: Py<PyAny>,
 }
 
 #[pymethods]
@@ -131,15 +40,12 @@ impl Field {
     #[new]
     #[classmethod]
     #[pyo3(signature = (raw_value, address))]
-    fn __new__(
+    pub(crate) fn __new__(
         cls: &Bound<'_, PyType>,
         raw_value: Option<&Bound<'_, PyAny>>,
         address: Bound<'_, Address>,
         py: Python,
     ) -> PyResult<Self> {
-        // NB: The deprecation check relies on the presence of NoFieldValue to detect if
-        //  the field was explicitly set, so this must come before we coerce the raw_value
-        //  to None below.
         Self::check_deprecated(cls, raw_value, &address, py)?;
 
         let raw_value = match raw_value {
@@ -191,7 +97,7 @@ impl Field {
 
     #[classmethod]
     #[pyo3(signature = (raw_value, address))]
-    fn compute_value<'py>(
+    pub(crate) fn compute_value<'py>(
         cls: &Bound<'py, PyType>,
         raw_value: Option<&Bound<'py, PyAny>>,
         address: PyRef<Address>,
@@ -199,7 +105,6 @@ impl Field {
     ) -> PyResult<Bound<'py, PyAny>> {
         let default = || -> PyResult<Bound<'_, PyAny>> {
             if Self::cls_required(cls)? {
-                // TODO: Should be `RequiredFieldMissingException`.
                 Err(PyValueError::new_err(format!(
                     "The `{}` field in target {} must be defined.",
                     Self::cls_alias(cls)?,
@@ -285,8 +190,7 @@ impl Field {
         cls.getattr("required")?.extract()
     }
 
-    fn cls_alias(cls: &Bound<'_, PyAny>) -> PyResult<String> {
-        // TODO: All of these methods should use interned attr names.
+    pub(crate) fn cls_alias(cls: &Bound<'_, PyAny>) -> PyResult<String> {
         cls.getattr("alias")?.extract()
     }
 
@@ -337,7 +241,7 @@ impl Field {
 }
 
 #[pyclass(subclass, frozen, extends = Field, generic, module = "pants.engine.internals.native_engine")]
-pub struct ScalarField;
+pub(crate) struct ScalarField;
 
 #[pymethods]
 impl ScalarField {
@@ -361,7 +265,7 @@ impl ScalarField {
 
     #[classmethod]
     #[pyo3(signature = (raw_value, address))]
-    fn compute_value<'py>(
+    pub(crate) fn compute_value<'py>(
         cls: &Bound<'py, PyType>,
         raw_value: Option<&Bound<'py, PyAny>>,
         address: Bound<'py, Address>,
@@ -389,7 +293,7 @@ impl ScalarField {
 }
 
 #[pyclass(subclass, frozen, extends = Field, generic, module = "pants.engine.internals.native_engine")]
-pub struct SequenceField;
+pub(crate) struct SequenceField;
 
 #[pymethods]
 impl SequenceField {
@@ -424,7 +328,6 @@ impl SequenceField {
             return Ok(value_or_default);
         }
         let expected_element_type = cls.getattr(intern!(py, "expected_element_type"))?;
-        // Check it's iterable and each element is the expected type
         if let Ok(iter) = value_or_default.try_iter() {
             for item in iter {
                 let item = item?;
@@ -461,7 +364,7 @@ impl SequenceField {
 }
 
 #[pyclass(subclass, frozen, extends = SequenceField, module = "pants.engine.internals.native_engine")]
-pub struct StringSequenceField;
+pub(crate) struct StringSequenceField;
 
 #[pymethods]
 impl StringSequenceField {
@@ -497,7 +400,7 @@ impl StringSequenceField {
 
     #[classmethod]
     #[pyo3(signature = (raw_value, address))]
-    fn compute_value<'py>(
+    pub(crate) fn compute_value<'py>(
         cls: &Bound<'py, PyType>,
         raw_value: Option<&Bound<'py, PyAny>>,
         address: Bound<'py, Address>,
@@ -521,8 +424,8 @@ impl StringSequenceField {
 }
 
 #[pyclass(subclass, frozen, extends = Field, module = "pants.engine.internals.native_engine")]
-pub struct AsyncFieldMixin {
-    address: Py<Address>,
+pub(crate) struct AsyncFieldMixin {
+    pub(crate) address: Py<Address>,
 }
 
 #[pymethods]
@@ -530,7 +433,7 @@ impl AsyncFieldMixin {
     #[new]
     #[classmethod]
     #[pyo3(signature = (raw_value, address))]
-    fn __new__(
+    pub(crate) fn __new__(
         cls: &Bound<'_, PyType>,
         raw_value: Option<&Bound<'_, PyAny>>,
         address: Bound<'_, Address>,
@@ -579,9 +482,7 @@ impl AsyncFieldMixin {
         op: CompareOp,
         py: Python,
     ) -> PyResult<PyComparedBool> {
-        let is_eq = if !other.is_instance_of::<AsyncFieldMixin>() {
-            false
-        } else {
+        let is_eq = if other.is_instance_of::<AsyncFieldMixin>() {
             let other_afm = other.cast::<AsyncFieldMixin>()?;
             self_.get_type().eq(other.get_type())?
                 && self_
@@ -592,6 +493,8 @@ impl AsyncFieldMixin {
                     .address
                     .bind(py)
                     .eq(other_afm.get().address.bind(py))?
+        } else {
+            false
         };
         Ok(PyComparedBool(match op {
             CompareOp::Eq => Some(is_eq),
