@@ -11,7 +11,6 @@ use itertools::Itertools;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::{PyException, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::pybacked::PyBackedStr;
 use pyo3::types::{PyIterator, PyString, PyTuple, PyType};
 
 use fs::{
@@ -32,6 +31,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAddPrefix>()?;
     m.add_class::<PyRemovePrefix>()?;
     m.add_class::<PyFilespecMatcher>()?;
+    m.add_class::<PyGlobMatchErrorBehavior>()?;
+    m.add_class::<PyGlobExpansionConjunction>()?;
+    m.add_class::<PyPathGlobs>()?;
     m.add_class::<PyPathMetadataKind>()?;
     m.add_class::<PyPathMetadata>()?;
     m.add_class::<PyPathNamespace>()?;
@@ -393,44 +395,263 @@ impl PyRemovePrefix {
     }
 }
 
-// -----------------------------------------------------------------------------
-// PathGlobs
-// -----------------------------------------------------------------------------
+#[pyclass(
+    name = "GlobMatchErrorBehavior",
+    frozen,
+    eq,
+    hash,
+    module = "pants.engine.internals.native_engine"
+)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum PyGlobMatchErrorBehavior {
+    #[pyo3(name = "ignore")]
+    Ignore,
+    #[pyo3(name = "warn")]
+    Warn,
+    #[pyo3(name = "error")]
+    Error,
+}
 
-#[allow(dead_code)]
-struct PyPathGlobs(PathGlobs);
+#[pymethods]
+impl PyGlobMatchErrorBehavior {
+    #[new]
+    fn __new__(value: &str) -> PyResult<Self> {
+        match value {
+            "ignore" => Ok(Self::Ignore),
+            "warn" => Ok(Self::Warn),
+            "error" => Ok(Self::Error),
+            _ => Err(PyValueError::new_err(format!(
+                "'{value}' is not a valid GlobMatchErrorBehavior"
+            ))),
+        }
+    }
 
-impl<'a, 'py> FromPyObject<'a, 'py> for PyPathGlobs {
-    type Error = PyErr;
+    #[classattr]
+    fn _engine_enum() -> bool {
+        true
+    }
 
-    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        let globs: Vec<String> = obj.getattr("globs")?.extract()?;
+    #[getter]
+    fn value(&self) -> &'static str {
+        match self {
+            Self::Ignore => "ignore",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
 
-        let description_of_origin_field = obj.getattr("description_of_origin")?;
-        let description_of_origin = if description_of_origin_field.is_none() {
-            None
-        } else {
-            Some(description_of_origin_field.extract()?)
-        };
+    #[getter]
+    fn name(&self) -> &'static str {
+        self.value()
+    }
 
-        let match_behavior_str: PyBackedStr = obj
-            .getattr("glob_match_error_behavior")?
-            .getattr("value")?
-            .extract()?;
-        let match_behavior =
-            StrictGlobMatching::create(match_behavior_str.as_ref(), description_of_origin)
-                .map_err(PyValueError::new_err)?;
+    fn __repr__(&self) -> String {
+        let v = self.value();
+        format!("<GlobMatchErrorBehavior.{v}: '{v}'>")
+    }
 
-        let conjunction_str: PyBackedStr =
-            obj.getattr("conjunction")?.getattr("value")?.extract()?;
-        let conjunction = GlobExpansionConjunction::create(conjunction_str.as_ref())
+    #[staticmethod]
+    fn _members_() -> Vec<PyGlobMatchErrorBehavior> {
+        vec![Self::Ignore, Self::Warn, Self::Error]
+    }
+}
+
+impl PyGlobMatchErrorBehavior {
+    pub fn to_strict(
+        &self,
+        description_of_origin: Option<String>,
+    ) -> Result<StrictGlobMatching, String> {
+        StrictGlobMatching::create(self.value(), description_of_origin)
+    }
+}
+
+#[pyclass(
+    name = "GlobExpansionConjunction",
+    frozen,
+    eq,
+    hash,
+    module = "pants.engine.internals.native_engine"
+)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum PyGlobExpansionConjunction {
+    #[pyo3(name = "any_match")]
+    AnyMatch,
+    #[pyo3(name = "all_match")]
+    AllMatch,
+}
+
+#[pymethods]
+impl PyGlobExpansionConjunction {
+    #[new]
+    fn __new__(value: &str) -> PyResult<Self> {
+        match value {
+            "any_match" => Ok(Self::AnyMatch),
+            "all_match" => Ok(Self::AllMatch),
+            _ => Err(PyValueError::new_err(format!(
+                "'{value}' is not a valid GlobExpansionConjunction"
+            ))),
+        }
+    }
+
+    #[classattr]
+    fn _engine_enum() -> bool {
+        true
+    }
+
+    #[getter]
+    fn value(&self) -> &'static str {
+        match self {
+            Self::AnyMatch => "any_match",
+            Self::AllMatch => "all_match",
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        self.value()
+    }
+
+    fn __repr__(&self) -> String {
+        let v = self.value();
+        format!("<GlobExpansionConjunction.{v}: '{v}'>")
+    }
+
+    #[staticmethod]
+    fn _members_() -> Vec<PyGlobExpansionConjunction> {
+        vec![Self::AnyMatch, Self::AllMatch]
+    }
+}
+
+impl PyGlobExpansionConjunction {
+    pub fn to_conjunction(&self) -> GlobExpansionConjunction {
+        match self {
+            Self::AnyMatch => GlobExpansionConjunction::AnyMatch,
+            Self::AllMatch => GlobExpansionConjunction::AllMatch,
+        }
+    }
+}
+
+#[pyclass(
+    name = "PathGlobs",
+    frozen,
+    module = "pants.engine.internals.native_engine"
+)]
+#[derive(Debug)]
+pub struct PyPathGlobs {
+    inner: PathGlobs,
+    globs: Py<PyTuple>,
+    glob_match_error_behavior: PyGlobMatchErrorBehavior,
+    conjunction: PyGlobExpansionConjunction,
+    description_of_origin: Option<String>,
+}
+
+#[pymethods]
+impl PyPathGlobs {
+    #[new]
+    #[pyo3(signature = (globs, glob_match_error_behavior=PyGlobMatchErrorBehavior::Ignore, conjunction=PyGlobExpansionConjunction::AnyMatch, description_of_origin=None))]
+    fn __new__(
+        globs: &Bound<'_, PyAny>,
+        glob_match_error_behavior: PyGlobMatchErrorBehavior,
+        conjunction: PyGlobExpansionConjunction,
+        description_of_origin: Option<String>,
+        py: Python,
+    ) -> PyResult<Self> {
+        let mut globs_vec: Vec<String> = Vec::new();
+        for item in globs.try_iter()? {
+            globs_vec.push(item?.extract()?);
+        }
+        globs_vec.sort();
+
+        match (&glob_match_error_behavior, &description_of_origin) {
+            (PyGlobMatchErrorBehavior::Ignore, Some(_)) => {
+                return Err(PyValueError::new_err(
+                    "You provided a `description_of_origin` value when `glob_match_error_behavior` \
+                     is set to `ignore`. The `ignore` value means that the engine will never \
+                     generate an error when the globs are generated, so `description_of_origin` \
+                     won't end up ever being used. Please either change \
+                     `glob_match_error_behavior` to `warn` or `error`, or remove \
+                     `description_of_origin`.",
+                ));
+            }
+            (PyGlobMatchErrorBehavior::Warn | PyGlobMatchErrorBehavior::Error, None) => {
+                return Err(PyValueError::new_err(
+                    "Please provide a `description_of_origin` so that the error message is more \
+                     helpful to users when their globs fail to match.",
+                ));
+            }
+            _ => {}
+        }
+
+        let strict_match_behavior = glob_match_error_behavior
+            .to_strict(description_of_origin.clone())
             .map_err(PyValueError::new_err)?;
+        let fs_conjunction = conjunction.to_conjunction();
 
-        Ok(PyPathGlobs(PathGlobs::new(
-            globs,
-            match_behavior,
+        let inner = PathGlobs::new(globs_vec.clone(), strict_match_behavior, fs_conjunction);
+
+        let globs_tuple =
+            PyTuple::new(py, globs_vec.iter().map(|s| PyString::new(py, s)))?.unbind();
+
+        Ok(Self {
+            inner,
+            globs: globs_tuple,
+            glob_match_error_behavior,
             conjunction,
-        )))
+            description_of_origin,
+        })
+    }
+
+    #[getter]
+    fn globs<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
+        self.globs.bind(py).clone()
+    }
+
+    #[getter]
+    fn glob_match_error_behavior(&self) -> PyGlobMatchErrorBehavior {
+        self.glob_match_error_behavior.clone()
+    }
+
+    #[getter]
+    fn conjunction(&self) -> PyGlobExpansionConjunction {
+        self.conjunction.clone()
+    }
+
+    #[getter]
+    fn description_of_origin(&self) -> Option<&str> {
+        self.description_of_origin.as_deref()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PathGlobs(globs={:?}, glob_match_error_behavior={}, conjunction={}, description_of_origin={:?})",
+            self.inner.globs(),
+            self.glob_match_error_behavior.value(),
+            self.conjunction.value(),
+            self.description_of_origin,
+        )
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyPathGlobs>) -> bool {
+        let other = other.borrow();
+        self.glob_match_error_behavior == other.glob_match_error_behavior
+            && self.conjunction == other.conjunction
+            && self.description_of_origin == other.description_of_origin
+            && self.inner.globs() == other.inner.globs()
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.inner.globs().hash(&mut s);
+        self.glob_match_error_behavior.hash(&mut s);
+        self.conjunction.hash(&mut s);
+        self.description_of_origin.hash(&mut s);
+        s.finish()
+    }
+}
+
+impl PyPathGlobs {
+    pub fn as_path_globs(&self) -> &PathGlobs {
+        &self.inner
     }
 }
 

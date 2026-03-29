@@ -301,7 +301,9 @@ class ListValueComponent:
         action = cls.MODIFY
         appends: Sequence[str] = []
         filters: Sequence[str] = []
-        is_enum = inspect.isclass(member_type) and issubclass(member_type, Enum)
+        is_enum = inspect.isclass(member_type) and (
+            issubclass(member_type, Enum) or getattr(member_type, "_engine_enum", False)
+        )
         if isinstance(value, (list, tuple)):  # Ensure we can handle list-typed default values.
             action = cls.REPLACE
             appends = value

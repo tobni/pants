@@ -354,6 +354,10 @@ impl PathGlobs {
         }
     }
 
+    pub fn globs(&self) -> &[String] {
+        &self.globs
+    }
+
     pub fn parse(self) -> Result<glob_matching::PreparedPathGlobs, String> {
         glob_matching::PreparedPathGlobs::create(
             self.globs,

@@ -173,14 +173,24 @@ class NativeOptionParser:
 
         def is_enum(typ):
             # TODO: When we switch to Python 3.11, use: return isinstance(typ, EnumType)
-            return inspect.isclass(typ) and issubclass(typ, Enum)
+            return inspect.isclass(typ) and (
+                issubclass(typ, Enum) or getattr(typ, "_engine_enum", False)
+            )
+
+        def enum_members(typ):
+            """Iterate over the members of an enum type."""
+            if getattr(typ, "_engine_enum", False):
+                return typ._members_()
+            return typ
 
         def apply_callable(callable_type, val_str):
             try:
                 return callable_type(val_str)
             except (TypeError, ValueError) as e:
                 if is_enum(callable_type):
-                    choices_str = ", ".join(f"{choice.value}" for choice in callable_type)
+                    choices_str = ", ".join(
+                        f"{choice.value}" for choice in enum_members(callable_type)
+                    )
                     raise ParseError(f"Invalid choice '{val_str}'. Choose from: {choices_str}")
                 raise ParseError(
                     f"Error applying type '{callable_type.__name__}' to option value '{val_str}': {e}"
@@ -264,7 +274,7 @@ class NativeOptionParser:
 
             def check_scalar_value(val, choices):
                 if choices is None and is_enum(option_type):
-                    choices = list(option_type)
+                    choices = list(enum_members(option_type))
                 if choices is not None and val not in choices:
                     raise ParseError(
                         softwrap(

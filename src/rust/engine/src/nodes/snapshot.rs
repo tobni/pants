@@ -5,8 +5,8 @@ use std::path::Path;
 
 use deepsize::DeepSizeOf;
 use fs::{
-    self, DigestEntry, DirectoryDigest, FileContent, FileEntry, GlobExpansionConjunction,
-    GlobMatching, PathGlobs, PreparedPathGlobs, StrictGlobMatching, SymlinkBehavior, SymlinkEntry,
+    self, DigestEntry, DirectoryDigest, FileContent, FileEntry, GlobMatching, PathGlobs,
+    PreparedPathGlobs, SymlinkBehavior, SymlinkEntry,
 };
 use futures::TryFutureExt;
 use graph::CompoundNode;
@@ -16,6 +16,7 @@ use pyo3::prelude::{Py, PyAny, Python};
 use super::{NodeKey, NodeOutput, NodeResult, unmatched_globs_additional_context};
 use crate::context::Context;
 use crate::externs;
+use crate::externs::fs::PyPathGlobs;
 use crate::python::{Value, throw};
 
 ///
@@ -32,31 +33,10 @@ impl Snapshot {
     }
 
     pub fn lift_path_globs(item: &Bound<'_, PyAny>) -> Result<PathGlobs, String> {
-        let globs: Vec<String> = externs::getattr(item, "globs")
-            .map_err(|e| format!("Failed to get `globs` for field: {e}"))?;
-
-        let description_of_origin =
-            externs::getattr_as_optional_string(item, "description_of_origin")
-                .map_err(|e| format!("Failed to get `description_of_origin` for field: {e}"))?;
-
-        let glob_match_error_behavior: Bound<'_, PyAny> =
-            externs::getattr(item, "glob_match_error_behavior")
-                .map_err(|e| format!("Failed to get `glob_match_error_behavior` for field: {e}"))?;
-
-        let failure_behavior: String = externs::getattr(&glob_match_error_behavior, "value")
-            .map_err(|e| format!("Failed to get `value` for field: {e}"))?;
-
-        let strict_glob_matching =
-            StrictGlobMatching::create(failure_behavior.as_str(), description_of_origin)?;
-
-        let conjunction_obj: Bound<'_, PyAny> = externs::getattr(item, "conjunction")
-            .map_err(|e| format!("Failed to get `conjunction` for field: {e}"))?;
-
-        let conjunction_string: String = externs::getattr(&conjunction_obj, "value")
-            .map_err(|e| format!("Failed to get `value` for field: {e}"))?;
-
-        let conjunction = GlobExpansionConjunction::create(&conjunction_string)?;
-        Ok(PathGlobs::new(globs, strict_glob_matching, conjunction))
+        let py_path_globs = item
+            .cast::<PyPathGlobs>()
+            .map_err(|e| format!("Expected PathGlobs, got: {e}"))?;
+        Ok(py_path_globs.get().as_path_globs().clone())
     }
 
     pub fn lift_prepared_path_globs(item: &Bound<'_, PyAny>) -> Result<PreparedPathGlobs, String> {

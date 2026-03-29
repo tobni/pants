@@ -222,7 +222,9 @@ class OptionRegistrar:
         if "member_type" in kwargs and type_arg != list:
             error(MemberTypeNotAllowed, type_=type_arg.__name__)
         member_type = kwargs.get("member_type", str)
-        is_enum = inspect.isclass(member_type) and issubclass(member_type, Enum)
+        is_enum = inspect.isclass(member_type) and (
+            issubclass(member_type, Enum) or getattr(member_type, "_engine_enum", False)
+        )
         if not is_enum and member_type not in self._allowed_member_types:
             error(InvalidMemberType, member_type=member_type.__name__)
 
