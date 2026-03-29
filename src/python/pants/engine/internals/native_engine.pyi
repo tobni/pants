@@ -486,6 +486,35 @@ class ScalarField(Field, Generic[_ST]):
     @classmethod
     def compute_value(cls, raw_value: Any | None, address: Address) -> _ST | None: ...
 
+class BoolField(ScalarField[bool]):
+    value: bool
+    default: ClassVar[bool]
+
+class StringField(ScalarField[str]):
+    valid_choices: ClassVar[type | tuple[str, ...] | None] = None
+
+    @classmethod
+    def compute_value(cls, raw_value: str | None, address: Address) -> str | None: ...
+
+class ValidNumbers:
+    positive_only: ValidNumbers = ...
+    positive_and_zero: ValidNumbers = ...
+    all: ValidNumbers = ...
+    @property
+    def value(self) -> str: ...
+
+class IntField(ScalarField[int]):
+    valid_numbers: ClassVar[ValidNumbers]
+
+    @classmethod
+    def compute_value(cls, raw_value: int | None, address: Address) -> int | None: ...
+
+class FloatField(ScalarField[float]):
+    valid_numbers: ClassVar[ValidNumbers]
+
+    @classmethod
+    def compute_value(cls, raw_value: float | None, address: Address) -> float | None: ...
+
 # NB: By subclassing `Field`, MyPy understands our type hints, and it means it doesn't matter
 # which order you use for inheriting the field template vs. the mixin.
 class AsyncFieldMixin(Field):

@@ -17,6 +17,7 @@ use std::sync::OnceLock;
 
 static INVALID_FIELD_TYPE_EXCEPTION: OnceLock<Py<PyAny>> = OnceLock::new();
 static INVALID_FIELD_CHOICE_EXCEPTION: OnceLock<Py<PyAny>> = OnceLock::new();
+static INVALID_FIELD_EXCEPTION: OnceLock<Py<PyAny>> = OnceLock::new();
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Field>()?;
@@ -24,6 +25,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SequenceField>()?;
     m.add_class::<StringSequenceField>()?;
     m.add_class::<AsyncFieldMixin>()?;
+    m.add_class::<BoolField>()?;
+    m.add_class::<StringField>()?;
+    m.add_class::<ValidNumbers>()?;
+    m.add_class::<IntField>()?;
+    m.add_class::<FloatField>()?;
     m.add_class::<NoFieldValue>()?;
 
     m.add("NO_VALUE", NoFieldValue)?;
@@ -598,5 +604,296 @@ impl AsyncFieldMixin {
             CompareOp::Ne => Some(!is_eq),
             _ => None,
         }))
+    }
+}
+
+#[allow(dead_code)]
+fn raise_invalid_field_exception(py: Python, message: &str) -> PyErr {
+    let get_exc = || -> PyResult<Bound<PyAny>> {
+        if let Some(exc) = INVALID_FIELD_EXCEPTION.get() {
+            return Ok(exc.bind(py).clone());
+        }
+        let exc = py
+            .import("pants.engine.target")?
+            .getattr("InvalidFieldException")?;
+        let _ = INVALID_FIELD_EXCEPTION.set(exc.clone().unbind());
+        Ok(exc)
+    };
+    match get_exc() {
+        Ok(exc_cls) => match exc_cls.call1((message,)) {
+            Ok(exc) => PyErr::from_value(exc),
+            Err(e) => e,
+        },
+        Err(e) => e,
+    }
+}
+
+#[pyclass(subclass, frozen, extends = ScalarField, module = "pants.engine.internals.native_engine")]
+pub struct BoolField;
+
+#[pymethods]
+impl BoolField {
+    #[new]
+    #[classmethod]
+    #[pyo3(signature = (raw_value, address))]
+    fn __new__(
+        cls: &Bound<'_, PyType>,
+        raw_value: Option<&Bound<'_, PyAny>>,
+        address: Bound<'_, Address>,
+        py: Python,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let field = Field::__new__(cls, raw_value, address, py)?;
+        Ok(PyClassInitializer::from(field)
+            .add_subclass(ScalarField)
+            .add_subclass(Self))
+    }
+
+    #[classattr]
+    fn expected_type<'py>(py: Python<'py>) -> Bound<'py, PyType> {
+        py.get_type::<pyo3::types::PyBool>()
+    }
+
+    #[classattr]
+    fn expected_type_description() -> &'static str {
+        "a boolean"
+    }
+}
+
+#[pyclass(subclass, frozen, extends = ScalarField, module = "pants.engine.internals.native_engine")]
+pub struct StringField;
+
+#[pymethods]
+impl StringField {
+    #[new]
+    #[classmethod]
+    #[pyo3(signature = (raw_value, address))]
+    fn __new__(
+        cls: &Bound<'_, PyType>,
+        raw_value: Option<&Bound<'_, PyAny>>,
+        address: Bound<'_, Address>,
+        py: Python,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let field = Field::__new__(cls, raw_value, address, py)?;
+        Ok(PyClassInitializer::from(field)
+            .add_subclass(ScalarField)
+            .add_subclass(Self))
+    }
+
+    #[classattr]
+    fn expected_type<'py>(py: Python<'py>) -> Bound<'py, PyType> {
+        py.get_type::<pyo3::types::PyString>()
+    }
+
+    #[classattr]
+    fn expected_type_description() -> &'static str {
+        "a string"
+    }
+
+    #[classattr]
+    fn valid_choices<'py>(py: Python<'py>) -> Bound<'py, PyAny> {
+        py.None().into_bound(py)
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (raw_value, address))]
+    fn compute_value<'py>(
+        cls: &Bound<'py, PyType>,
+        raw_value: Option<&Bound<'py, PyAny>>,
+        address: Bound<'py, Address>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let value_or_default = ScalarField::compute_value(cls, raw_value, address.clone(), py)?;
+        if !value_or_default.is_none() {
+            let valid_choices = cls.getattr(intern!(py, "valid_choices"))?;
+            if !valid_choices.is_none() {
+                let values = pyo3::types::PyTuple::new(py, [&value_or_default])?;
+                validate_choices(
+                    py,
+                    address.as_any(),
+                    &Field::cls_alias(cls)?,
+                    values.as_any(),
+                    &valid_choices,
+                )?;
+            }
+        }
+        Ok(value_or_default)
+    }
+}
+
+#[pyclass(
+    name = "ValidNumbers",
+    frozen,
+    eq,
+    hash,
+    module = "pants.engine.internals.native_engine"
+)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ValidNumbers {
+    #[pyo3(name = "positive_only")]
+    PositiveOnly,
+    #[pyo3(name = "positive_and_zero")]
+    PositiveAndZero,
+    #[pyo3(name = "all")]
+    All,
+}
+
+#[pymethods]
+impl ValidNumbers {
+    #[getter]
+    fn value(&self) -> &'static str {
+        match self {
+            Self::PositiveOnly => "positive_only",
+            Self::PositiveAndZero => "positive_and_zero",
+            Self::All => "all",
+        }
+    }
+}
+
+impl ValidNumbers {
+    fn validate_number(
+        &self,
+        value: &Bound<'_, PyAny>,
+        alias: &str,
+        address: &Bound<'_, PyAny>,
+        py: Python,
+    ) -> PyResult<()> {
+        if matches!(self, Self::All) {
+            return Ok(());
+        }
+        let num: f64 = value.extract()?;
+        match self {
+            Self::PositiveAndZero if num < 0.0 => Err(raise_invalid_field_exception(
+                py,
+                &format!(
+                    "The {alias:?} field in target {address} must be greater than or equal to \
+                     zero, but was set to `{value}`."
+                ),
+            )),
+            Self::PositiveOnly if num <= 0.0 => Err(raise_invalid_field_exception(
+                py,
+                &format!(
+                    "The {alias:?} field in target {address} must be greater than zero, but was \
+                     set to `{value}`."
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn validate_number_field<'py>(
+    cls: &Bound<'py, PyType>,
+    value_or_default: &Bound<'py, PyAny>,
+    address: &Bound<'py, Address>,
+    py: Python<'py>,
+) -> PyResult<()> {
+    let valid_numbers: ValidNumbers = cls.getattr(intern!(py, "valid_numbers"))?.extract()?;
+    valid_numbers.validate_number(
+        value_or_default,
+        &Field::cls_alias(cls)?,
+        address.as_any(),
+        py,
+    )
+}
+
+#[pyclass(subclass, frozen, extends = ScalarField, module = "pants.engine.internals.native_engine")]
+pub struct IntField;
+
+#[pymethods]
+impl IntField {
+    #[new]
+    #[classmethod]
+    #[pyo3(signature = (raw_value, address))]
+    fn __new__(
+        cls: &Bound<'_, PyType>,
+        raw_value: Option<&Bound<'_, PyAny>>,
+        address: Bound<'_, Address>,
+        py: Python,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let field = Field::__new__(cls, raw_value, address, py)?;
+        Ok(PyClassInitializer::from(field)
+            .add_subclass(ScalarField)
+            .add_subclass(Self))
+    }
+
+    #[classattr]
+    fn expected_type<'py>(py: Python<'py>) -> Bound<'py, PyType> {
+        py.get_type::<pyo3::types::PyInt>()
+    }
+
+    #[classattr]
+    fn expected_type_description() -> &'static str {
+        "an integer"
+    }
+
+    #[classattr]
+    fn valid_numbers() -> ValidNumbers {
+        ValidNumbers::All
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (raw_value, address))]
+    fn compute_value<'py>(
+        cls: &Bound<'py, PyType>,
+        raw_value: Option<&Bound<'py, PyAny>>,
+        address: Bound<'py, Address>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let value_or_default = ScalarField::compute_value(cls, raw_value, address.clone(), py)?;
+        if !value_or_default.is_none() {
+            validate_number_field(cls, &value_or_default, &address, py)?;
+        }
+        Ok(value_or_default)
+    }
+}
+
+#[pyclass(subclass, frozen, extends = ScalarField, module = "pants.engine.internals.native_engine")]
+pub struct FloatField;
+
+#[pymethods]
+impl FloatField {
+    #[new]
+    #[classmethod]
+    #[pyo3(signature = (raw_value, address))]
+    fn __new__(
+        cls: &Bound<'_, PyType>,
+        raw_value: Option<&Bound<'_, PyAny>>,
+        address: Bound<'_, Address>,
+        py: Python,
+    ) -> PyResult<PyClassInitializer<Self>> {
+        let field = Field::__new__(cls, raw_value, address, py)?;
+        Ok(PyClassInitializer::from(field)
+            .add_subclass(ScalarField)
+            .add_subclass(Self))
+    }
+
+    #[classattr]
+    fn expected_type<'py>(py: Python<'py>) -> Bound<'py, PyType> {
+        py.get_type::<pyo3::types::PyFloat>()
+    }
+
+    #[classattr]
+    fn expected_type_description() -> &'static str {
+        "a float"
+    }
+
+    #[classattr]
+    fn valid_numbers() -> ValidNumbers {
+        ValidNumbers::All
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (raw_value, address))]
+    fn compute_value<'py>(
+        cls: &Bound<'py, PyType>,
+        raw_value: Option<&Bound<'py, PyAny>>,
+        address: Bound<'py, Address>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let value_or_default = ScalarField::compute_value(cls, raw_value, address.clone(), py)?;
+        if !value_or_default.is_none() {
+            validate_number_field(cls, &value_or_default, &address, py)?;
+        }
+        Ok(value_or_default)
     }
 }

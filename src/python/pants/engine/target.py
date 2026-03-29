@@ -51,8 +51,12 @@ from pants.engine.internals.dep_rules import (
 from pants.engine.internals.native_engine import NO_VALUE as NO_VALUE  # noqa: F401
 from pants.engine.internals.native_engine import Field as Field
 from pants.engine.internals.native_engine import AsyncFieldMixin as AsyncFieldMixin
+from pants.engine.internals.native_engine import BoolField as BoolField
+from pants.engine.internals.native_engine import FloatField as FloatField
+from pants.engine.internals.native_engine import IntField as IntField
 from pants.engine.internals.native_engine import ScalarField as ScalarField
 from pants.engine.internals.native_engine import SequenceField as SequenceField
+from pants.engine.internals.native_engine import StringField as StringField
 from pants.engine.internals.native_engine import StringSequenceField as StringSequenceField
 from pants.engine.internals.target_adaptor import SourceBlock, SourceBlocks  # noqa: F401
 from pants.engine.rules import rule
@@ -1683,19 +1687,6 @@ T = TypeVar("T")
 
 
 
-class BoolField(ScalarField[bool]):
-    """A field whose value is a boolean.
-
-    Subclasses must either set `default: bool` or `required = True` so that the value is always
-    defined.
-    """
-
-    expected_type = bool
-    expected_type_description = "a boolean"
-    value: bool
-    default: ClassVar[bool]
-
-
 class TriBoolField(ScalarField[bool]):
     """A field whose value is a boolean or None, which is meant to represent a tri-state."""
 
@@ -1707,73 +1698,9 @@ class TriBoolField(ScalarField[bool]):
         return super().compute_value(raw_value, address)
 
 
-class ValidNumbers(Enum):
-    """What range of numbers are allowed for IntField and FloatField."""
-
-    positive_only = enum.auto()
-    positive_and_zero = enum.auto()
-    all = enum.auto()
-
-    def validate(self, num: float | int | None, alias: str, address: Address) -> None:
-        if num is None or self == self.all:
-            return
-        if self == self.positive_and_zero:
-            if num < 0:
-                raise InvalidFieldException(
-                    f"The {repr(alias)} field in target {address} must be greater than or equal to "
-                    f"zero, but was set to `{num}`."
-                )
-            return
-        if num <= 0:
-            raise InvalidFieldException(
-                f"The {repr(alias)} field in target {address} must be greater than zero, but was "
-                f"set to `{num}`."
-            )
+from pants.engine.internals.native_engine import ValidNumbers as ValidNumbers
 
 
-class IntField(ScalarField[int]):
-    expected_type = int
-    expected_type_description = "an integer"
-    valid_numbers: ClassVar[ValidNumbers] = ValidNumbers.all
-
-    @classmethod
-    def compute_value(cls, raw_value: int | None, address: Address) -> int | None:
-        value_or_default = super().compute_value(raw_value, address)
-        cls.valid_numbers.validate(value_or_default, cls.alias, address)
-        return value_or_default
-
-
-class FloatField(ScalarField[float]):
-    expected_type = float
-    expected_type_description = "a float"
-    valid_numbers: ClassVar[ValidNumbers] = ValidNumbers.all
-
-    @classmethod
-    def compute_value(cls, raw_value: float | None, address: Address) -> float | None:
-        value_or_default = super().compute_value(raw_value, address)
-        cls.valid_numbers.validate(value_or_default, cls.alias, address)
-        return value_or_default
-
-
-class StringField(ScalarField[str]):
-    """A field whose value is a string.
-
-    If you expect the string to only be one of several values, set the class property
-    `valid_choices`.
-    """
-
-    expected_type = str
-    expected_type_description = "a string"
-    valid_choices: ClassVar[type[Enum] | tuple[str, ...] | None] = None
-
-    @classmethod
-    def compute_value(cls, raw_value: str | None, address: Address) -> str | None:
-        value_or_default = super().compute_value(raw_value, address)
-        if value_or_default is not None and cls.valid_choices is not None:
-            _validate_choices(
-                address, cls.alias, [value_or_default], valid_choices=cls.valid_choices
-            )
-        return value_or_default
 
 
 class TupleSequenceField(Generic[T], Field):
@@ -1946,24 +1873,6 @@ class DictStringToStringSequenceField(Field):
                 raise invalid_type_exception
         return FrozenDict(result)
 
-
-def _validate_choices(
-    address: Address,
-    field_alias: str,
-    values: Iterable[Any],
-    *,
-    valid_choices: type[Enum] | tuple[Any, ...],
-) -> None:
-    _valid_choices = set(
-        valid_choices
-        if isinstance(valid_choices, tuple)
-        else (choice.value for choice in valid_choices)
-    )
-    for choice in values:
-        if choice not in _valid_choices:
-            raise InvalidFieldChoiceException(
-                address, field_alias, choice, valid_choices=_valid_choices
-            )
 
 
 # -----------------------------------------------------------------------------------------------
