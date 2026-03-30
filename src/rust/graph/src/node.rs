@@ -62,6 +62,15 @@ pub trait Node: Clone + Debug + Display + Eq + Hash + Send + Sync + 'static {
     /// path.
     ///
     fn cyclic_error(path: &[&Self]) -> Self::Error;
+
+    ///
+    /// A key identifying this node's batch group for GIL-tracing. Nodes with the same
+    /// batch key can have their Python generators driven in lockstep, amortizing GIL
+    /// acquisition across the batch. Returns None if this node is not batchable.
+    ///
+    fn batch_key(&self) -> Option<u64> {
+        None
+    }
 }
 
 pub trait NodeError: Clone + Debug + Eq + Send + Sync {

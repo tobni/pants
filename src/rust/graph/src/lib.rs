@@ -1,6 +1,7 @@
 // Copyright 2018 Pants project contributors (see CONTRIBUTORS.md).
 // Licensed under the Apache License, Version 2.0 (see LICENSE).
 
+pub mod batch;
 mod context;
 mod entry;
 mod node;
@@ -28,6 +29,7 @@ use task_executor::Executor;
 use tokio::time::sleep;
 use workunit_store::RunId;
 
+pub use crate::batch::BatchAccumulator;
 pub use crate::context::Context;
 pub use crate::node::{CompoundNode, EntryId, Node, NodeError};
 

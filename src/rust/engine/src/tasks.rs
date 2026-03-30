@@ -134,7 +134,18 @@ pub struct Task {
     pub masked_types: Vec<TypeId>,
     pub func: Function,
     pub cacheable: bool,
+    pub batchable: bool,
     pub display_info: DisplayInfo,
+}
+
+impl Task {
+    /// A stable hash of this rule's identity for batch grouping.
+    pub fn batch_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 #[derive(Clone, Debug, DeepSizeOf, Eq, Hash, PartialEq)]
@@ -203,6 +214,7 @@ impl Tasks {
         arg_types: Vec<(String, TypeId)>,
         masked_types: Vec<TypeId>,
         cacheable: bool,
+        batchable: bool,
         name: String,
         desc: Option<String>,
         level: Level,
@@ -219,6 +231,7 @@ impl Tasks {
         self.preparing = Some(Task {
             id: RuleId::new(&name),
             cacheable,
+            batchable,
             product: return_type,
             side_effecting,
             engine_aware_return_type,

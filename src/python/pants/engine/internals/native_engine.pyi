@@ -905,6 +905,7 @@ def tasks_task_begin(
     side_effecting: bool,
     engine_aware_return_type: bool,
     cacheable: bool,
+    batchable: bool,
     name: str,
     desc: str,
     level: int,

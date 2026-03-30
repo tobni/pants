@@ -456,7 +456,7 @@ async def resolve_parsed_dependencies(
     )
 
 
-@rule(desc="Inferring Python dependencies by analyzing source")
+@rule(desc="Inferring Python dependencies by analyzing source", batchable=True)
 async def infer_python_dependencies_via_source(
     request: InferPythonImportDependencies,
     python_infer_subsystem: PythonInferSubsystem,

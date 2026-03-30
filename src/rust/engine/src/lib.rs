@@ -8,6 +8,7 @@
 #[macro_use]
 extern crate derivative;
 
+mod batch;
 mod context;
 mod downloads;
 mod externs;

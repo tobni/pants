@@ -699,6 +699,7 @@ def register_rules(rule_index: RuleIndex, union_membership: UnionMembership) -> 
             side_effecting=any(issubclass(t, SideEffecting) for t in rule.parameters.values()),
             engine_aware_return_type=issubclass(rule.output_type, EngineAwareReturnType),
             cacheable=rule.cacheable,
+            batchable=rule.batchable,
             name=rule.canonical_name,
             desc=rule.desc or "",
             level=rule.level.level,

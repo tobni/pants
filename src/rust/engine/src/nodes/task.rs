@@ -40,6 +40,10 @@ pub struct Task {
 }
 
 impl Task {
+    pub fn is_batchable(&self) -> bool {
+        self.task.batchable
+    }
+
     // Handles the case where a generator requests a `Call` to a known `@rule`.
     async fn gen_call(
         context: &Context,
@@ -194,14 +198,205 @@ impl Task {
         }
     }
 
+    /// Call the Python rule function with the resolved dependencies, returning the
+    /// generator/result value and its type.
+    fn call_rule_function(
+        task: &Intern<tasks::Task>,
+        args: &Option<Key>,
+        args_arity: u16,
+        deps: Vec<Value>,
+    ) -> NodeResult<(Value, TypeId)> {
+        Python::attach(|py| {
+            let func = task.func.0.value.bind(py);
+
+            let res = if let Some(args) = args {
+                let args = args
+                    .value
+                    .bind(py)
+                    .extract::<Bound<'_, PyTuple>>()
+                    .map_err(PyErr::from)?;
+                let kwargs = PyDict::new(py);
+                for ((name, _), value) in task
+                    .args
+                    .iter()
+                    .skip(args_arity.into())
+                    .zip(deps.into_iter())
+                {
+                    kwargs.set_item(name, &value)?;
+                }
+                func.call(args, Some(&kwargs))
+            } else {
+                let deps = deps
+                    .iter()
+                    .map(|v| v.into_pyobject(py))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("Conversion error: {e:?}"))?;
+                let args_tuple = PyTuple::new(py, deps)?;
+                func.call1(args_tuple)
+            };
+
+            res.map(|res| {
+                let type_id = TypeId::new(&res.get_type().as_borrowed());
+                let val = Value::from(&res);
+                (val, type_id)
+            })
+            .map_err(Failure::from)
+        })
+    }
+
+    /// Drive a rule result through generator execution if needed, and validate the product type.
+    async fn drive_and_validate(
+        context: &Context,
+        workunit: &mut RunningWorkunit,
+        task: &Intern<tasks::Task>,
+        params: Params,
+        entry: Intern<rule_graph::Entry<Rule>>,
+        side_effected: &Arc<AtomicBool>,
+        mut result_val: Value,
+        mut result_type: TypeId,
+    ) -> NodeResult<Value> {
+        if result_type == context.core.types.coroutine {
+            let (new_val, new_type) = task_context(
+                context.clone(),
+                task.side_effecting,
+                side_effected,
+                Self::generate(context, workunit, params, entry, result_val),
+            )
+            .await?;
+            result_val = new_val;
+            result_type = new_type;
+        }
+
+        if result_type != task.product {
+            return Err(externs::IncorrectProductError::new_err(format!(
+                "{:?} returned a result value that did not satisfy its constraints: {:?}",
+                task.func, result_val
+            ))
+            .into());
+        }
+
+        if task.engine_aware_return_type {
+            Python::attach(|py| {
+                EngineAwareReturnType::update_workunit(workunit, result_val.bind(py))
+            })
+        };
+
+        Ok(result_val)
+    }
+
+    /// GIL-trace a batch of generators: step all N generators per round in a single
+    /// GIL acquisition, then await all sub-requests concurrently between rounds.
+    async fn generate_traced(
+        context: &Context,
+        generators: &[Value],
+        params: &[Params],
+        entry: Intern<rule_graph::Entry<Rule>>,
+    ) -> Vec<NodeResult<(Value, TypeId)>> {
+        let n = generators.len();
+        let mut inputs: Vec<GeneratorInput> = (0..n).map(|_| GeneratorInput::Initial).collect();
+        let mut results: Vec<Option<NodeResult<(Value, TypeId)>>> = vec![None; n];
+
+        loop {
+            // Step all active generators in one GIL acquisition.
+            let responses: Vec<Option<Result<GeneratorResponse, Failure>>> =
+                Python::attach(|py| {
+                    (0..n)
+                        .map(|i| {
+                            if results[i].is_some() {
+                                return None;
+                            }
+                            Some(externs::generator_send(
+                                py,
+                                &context.core.types.coroutine,
+                                &generators[i],
+                                std::mem::replace(&mut inputs[i], GeneratorInput::Initial),
+                            ))
+                        })
+                        .collect()
+                });
+
+            // Collect sub-request futures.
+            let mut pending: Vec<(usize, BoxFuture<'_, NodeResult<Value>>)> = Vec::new();
+
+            for (i, resp) in responses.into_iter().enumerate() {
+                let Some(resp) = resp else { continue };
+                match resp {
+                    Err(e) => {
+                        results[i] = Some(Err(e));
+                    }
+                    Ok(GeneratorResponse::Break(val, ty)) => {
+                        results[i] = Some(Ok((val, ty)));
+                    }
+                    Ok(GeneratorResponse::NativeCall(call)) => {
+                        pending.push((i, (call.call).boxed()));
+                    }
+                    Ok(GeneratorResponse::Call(call)) => {
+                        pending.push((
+                            i,
+                            Self::gen_call(context, params[i].clone(), entry, call).boxed(),
+                        ));
+                    }
+                    Ok(GeneratorResponse::All(gens)) => {
+                        let ctx = context.clone();
+                        let p = params[i].clone();
+                        pending.push((
+                            i,
+                            async move {
+                                let futs: Vec<_> = gens
+                                    .into_iter()
+                                    .map(|g| Self::gen_generator(&ctx, p.clone(), entry, g))
+                                    .collect();
+                                let values = future::try_join_all(futs).await?;
+                                Python::attach(|py| externs::store_tuple(py, values))
+                                    .map_err(Failure::from)
+                            }
+                            .boxed(),
+                        ));
+                    }
+                }
+            }
+
+            if results.iter().all(|r| r.is_some()) {
+                break;
+            }
+
+            // Await all sub-requests concurrently.
+            let awaited =
+                future::join_all(pending.into_iter().map(|(i, fut)| async move { (i, fut.await) }))
+                    .await;
+
+            for (i, result) in awaited {
+                match result {
+                    Ok(value) => {
+                        inputs[i] = GeneratorInput::Arg(value);
+                    }
+                    Err(throw @ Failure::Throw { .. }) => {
+                        inputs[i] = GeneratorInput::Err(PyErr::from(throw));
+                    }
+                    Err(failure) => {
+                        results[i] = Some(Err(failure));
+                    }
+                }
+            }
+
+            if results.iter().all(|r| r.is_some()) {
+                break;
+            }
+        }
+
+        results.into_iter().map(|r| r.unwrap()).collect()
+    }
+
     pub(super) async fn run_node(
         self,
         context: Context,
         workunit: &mut RunningWorkunit,
     ) -> NodeResult<Value> {
+        let is_batchable = self.is_batchable();
         let params = self.params;
+
+        // Resolve deps (same for batchable and non-batchable).
         let deps = {
-            // While waiting for dependencies, mark ourselves blocking.
             let _blocking_token = workunit.blocking();
             let edges = &context
                 .core
@@ -227,83 +422,83 @@ impl Task {
             .await?
         };
 
+        // Create the Python generator/result.
         let args = self.args;
-
-        let (mut result_val, mut result_type) = task_context(
+        let task = self.task.clone();
+        let (result_val, result_type) = task_context(
             context.clone(),
             self.task.side_effecting,
             &self.side_effected,
-            async move {
-                Python::attach(|py| {
-                    let func = self.task.func.0.value.bind(py);
-
-                    // If there are explicit positional arguments, apply any computed arguments as
-                    // keywords. Otherwise, apply computed arguments as positional.
-                    let res = if let Some(args) = args {
-                        let args = args
-                            .value
-                            .bind(py)
-                            .extract::<Bound<'_, PyTuple>>()
-                            .map_err(PyErr::from)?;
-                        let kwargs = PyDict::new(py);
-                        for ((name, _), value) in self
-                            .task
-                            .args
-                            .iter()
-                            .skip(self.args_arity.into())
-                            .zip(deps.into_iter())
-                        {
-                            kwargs.set_item(name, &value)?;
-                        }
-                        func.call(args, Some(&kwargs))
-                    } else {
-                        let deps = deps
-                            .iter()
-                            .map(|v| v.into_pyobject(py))
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(|e| format!("Conversion error: {e:?}"))?;
-                        let args_tuple = PyTuple::new(py, deps)?;
-                        func.call1(args_tuple)
-                    };
-
-                    res.map(|res| {
-                        let type_id = TypeId::new(&res.get_type().as_borrowed());
-                        let val = Value::from(&res);
-                        (val, type_id)
-                    })
-                    .map_err(Failure::from)
-                })
-            },
+            async move { Self::call_rule_function(&task, &args, self.args_arity, deps) },
         )
         .await?;
 
-        if result_type == context.core.types.coroutine {
-            let (new_val, new_type) = task_context(
-                context.clone(),
-                self.task.side_effecting,
-                &self.side_effected,
-                Self::generate(&context, workunit, params, self.entry, result_val),
-            )
-            .await?;
-            result_val = new_val;
-            result_type = new_type;
+        // For batchable coroutines, enqueue the generator for GIL-traced stepping.
+        if is_batchable && result_type == context.core.types.coroutine {
+            let batch_key = self.task.batch_key();
+
+            let enqueue_result = context.core.generator_batch.enqueue(
+                batch_key,
+                result_val,
+                params.clone(),
+                self.entry,
+            );
+
+            // Yield to let other batchable tasks enqueue their generators.
+            tokio::task::yield_now().await;
+
+            // Check if the burst is over (generation unchanged).
+            if let Some(batch_items) =
+                context
+                    .core
+                    .generator_batch
+                    .try_take(batch_key, enqueue_result.generation)
+            {
+                // We are the flusher. GIL-trace all generators in lockstep.
+                let generators: Vec<Value> =
+                    batch_items.iter().map(|item| item.generator.clone()).collect();
+                let params_list: Vec<Params> =
+                    batch_items.iter().map(|item| item.params.clone()).collect();
+                let entry = batch_items[0].entry;
+
+                let traced_results = task_context(
+                    context.clone(),
+                    self.task.side_effecting,
+                    &self.side_effected,
+                    Self::generate_traced(&context, &generators, &params_list, entry),
+                )
+                .await;
+
+                for (item, result) in
+                    batch_items.into_iter().zip(traced_results.into_iter())
+                {
+                    let _ = item.result_tx.send(result);
+                }
+            }
+
+            // Wait for our result (set by the flusher, which may be us or another task).
+            let (traced_val, traced_type) = enqueue_result
+                .result_rx
+                .await
+                .map_err(|_| Failure::from("Generator batch dropped".to_string()))??;
+
+            if traced_type != self.task.product {
+                return Err(externs::IncorrectProductError::new_err(format!(
+                    "{:?} returned a result value that did not satisfy its constraints: {:?}",
+                    self.task.func, traced_val
+                ))
+                .into());
+            }
+
+            return Ok(traced_val);
         }
 
-        if result_type != self.task.product {
-            return Err(externs::IncorrectProductError::new_err(format!(
-                "{:?} returned a result value that did not satisfy its constraints: {:?}",
-                self.task.func, result_val
-            ))
-            .into());
-        }
-
-        if self.task.engine_aware_return_type {
-            Python::attach(|py| {
-                EngineAwareReturnType::update_workunit(workunit, result_val.bind(py))
-            })
-        };
-
-        Ok(result_val)
+        // Non-batchable or non-coroutine: drive individually.
+        Self::drive_and_validate(
+            &context, workunit, &self.task, params, self.entry,
+            &self.side_effected, result_val, result_type,
+        )
+        .await
     }
 }
 

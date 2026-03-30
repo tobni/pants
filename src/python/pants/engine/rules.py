@@ -77,6 +77,7 @@ def _make_rule(
     *,
     cacheable: bool,
     polymorphic: bool,
+    batchable: bool,
     canonical_name: str,
     desc: str | None,
     level: LogLevel,
@@ -129,6 +130,7 @@ def _make_rule(
             level=level,
             cacheable=cacheable,
             polymorphic=polymorphic,
+            batchable=batchable,
         )
         return func
 
@@ -175,6 +177,7 @@ def _ensure_type_annotation(
 
 
 PUBLIC_RULE_DECORATOR_ARGUMENTS = {
+    "batchable",
     "canonical_name",
     "canonical_name_suffix",
     "desc",
@@ -247,6 +250,15 @@ class RuleDecoratorKwargs(TypedDict):
     _param_type_overrides: NotRequired[dict[str, type[Any]]]
     """Unstable. Internal Pants usage only."""
 
+    batchable: NotRequired[bool]
+    """Whether the engine may batch multiple concurrent calls to this rule.
+
+    When True, the engine may coalesce multiple pending invocations of this rule
+    (with different inputs) into a tight execution loop, reducing per-call overhead
+    from Python/Rust trampolining. The rule signature is unchanged — the engine
+    handles multiplexing transparently.
+    """
+
 
 class _RuleDecoratorKwargs(RuleDecoratorKwargs):
     """Internal/Implicit @rule kwargs (not for use outside rules.py)"""
@@ -282,6 +294,7 @@ def rule_decorator(
     rule_type = kwargs["rule_type"]
     cacheable = kwargs["cacheable"]
     polymorphic = kwargs.get("polymorphic", False)
+    batchable = kwargs.get("batchable", False)
     masked_types: tuple[type, ...] = tuple(kwargs.get("_masked_types", ()))
     param_type_overrides: dict[str, type] = kwargs.get("_param_type_overrides", {})
 
@@ -367,6 +380,7 @@ def rule_decorator(
         masked_types,
         cacheable=cacheable,
         polymorphic=polymorphic,
+        batchable=batchable,
         canonical_name=effective_name,
         desc=effective_desc,
         level=effective_level,
@@ -560,6 +574,7 @@ class TaskRule:
     level: LogLevel = LogLevel.TRACE
     cacheable: bool = True
     polymorphic: bool = False
+    batchable: bool = False
 
     def __str__(self):
         return "(name={}, {}, {!r}, {}, gets={})".format(

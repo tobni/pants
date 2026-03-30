@@ -607,6 +607,18 @@ impl Node for NodeKey {
         }
     }
 
+    fn batch_key(&self) -> Option<u64> {
+        match self {
+            NodeKey::Task(task) if task.is_batchable() => {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                task.task.hash(&mut hasher);
+                Some(hasher.finish())
+            }
+            _ => None,
+        }
+    }
+
     fn cyclic_error(path: &[&NodeKey]) -> Failure {
         let mut path = path.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         if !path.is_empty() {

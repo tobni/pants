@@ -88,6 +88,7 @@ pub struct Core {
     pub named_caches: NamedCaches,
     pub immutable_inputs: ImmutableInputs,
     pub local_execution_root_dir: PathBuf,
+    pub generator_batch: crate::batch::GeneratorBatch,
 }
 
 #[derive(Clone, Debug)]
@@ -761,6 +762,7 @@ impl Core {
             named_caches,
             immutable_inputs,
             local_execution_root_dir,
+            generator_batch: crate::batch::GeneratorBatch::new(),
         })
     }
 
