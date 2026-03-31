@@ -1262,6 +1262,7 @@ fn execution_add_root_select<'py>(
 }
 
 #[pyfunction]
+#[pyo3(signature = (py_tasks, func, output_type, arg_types, masked_types, side_effecting, engine_aware_return_type, cacheable, batchable, name, desc, level, native=false))]
 fn tasks_task_begin<'py>(
     py: Python<'py>,
     py_tasks: &Bound<'py, PyTasks>,
@@ -1276,6 +1277,7 @@ fn tasks_task_begin<'py>(
     name: String,
     desc: String,
     level: u64,
+    native: bool,
 ) -> PyO3Result<()> {
     let py_level: PythonLogLevel = level
         .try_into()
@@ -1302,6 +1304,7 @@ fn tasks_task_begin<'py>(
             masked_types,
             cacheable,
             batchable,
+            native,
             name,
             if desc.is_empty() { None } else { Some(desc) },
             py_level.into(),

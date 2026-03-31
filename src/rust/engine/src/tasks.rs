@@ -135,6 +135,7 @@ pub struct Task {
     pub func: Function,
     pub cacheable: bool,
     pub batchable: bool,
+    pub native: bool,
     pub display_info: DisplayInfo,
 }
 
@@ -215,6 +216,7 @@ impl Tasks {
         masked_types: Vec<TypeId>,
         cacheable: bool,
         batchable: bool,
+        native: bool,
         name: String,
         desc: Option<String>,
         level: Level,
@@ -232,6 +234,7 @@ impl Tasks {
             id: RuleId::new(&name),
             cacheable,
             batchable,
+            native,
             product: return_type,
             side_effecting,
             engine_aware_return_type,
@@ -317,5 +320,15 @@ impl Tasks {
 
     pub fn query_add(&mut self, product: TypeId, params: Vec<TypeId>) {
         self.queries.insert(Query::new(product, params));
+    }
+
+    /// Returns a map from RuleId to Function for all native rules.
+    /// Used to inline native calls in the generator loop.
+    pub fn native_rule_fns(&self) -> HashMap<RuleId, Function> {
+        self.rules
+            .iter()
+            .filter(|rule| rule.0.native)
+            .map(|rule| (rule.0.id.clone(), rule.0.func.clone()))
+            .collect()
     }
 }

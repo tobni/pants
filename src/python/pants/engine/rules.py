@@ -485,6 +485,67 @@ def goal_rule(*args, **kwargs):
     )
 
 
+def native_rule(
+    native_fn: Callable,
+    input_type: type,
+    output_type: type,
+    *,
+    canonical_name: str | None = None,
+) -> Callable:
+    """Register a native engine function as a rule, bypassing Python at execution time.
+
+    Instead of writing:
+        @rule
+        async def remove_prefix(remove_prefix: RemovePrefix) -> Digest:
+            return await native_engine.remove_prefix(remove_prefix)
+
+    Write:
+        remove_prefix = native_rule(native_engine.remove_prefix, RemovePrefix, Digest)
+
+    The engine calls the native function directly and extracts the Rust future,
+    skipping the Python generator protocol entirely.
+    """
+    if canonical_name is None:
+        module = native_fn.__module__ if hasattr(native_fn, "__module__") else ""
+        # For native_engine builtins, construct a sensible canonical name.
+        name = getattr(native_fn, "__name__", str(native_fn))
+        if module:
+            canonical_name = f"{module}.{name}"
+        else:
+            canonical_name = f"pants.engine.intrinsics.{name}"
+
+    # The func stored on the TaskRule is what the engine calls in run_node.
+    # For native rules, this is the #[pyfunction] itself.
+    func = native_fn
+
+    task_rule = TaskRule(
+        output_type,
+        FrozenDict({name: input_type}),
+        (),  # no awaitables
+        (),  # no masked types
+        native_fn,
+        canonical_name=canonical_name,
+        native=True,
+    )
+
+    # For call-by-name support: create a callable that yields a Call.
+    # Handles both explicit args (await foo(x)) and implicit args
+    # (await foo(**implicitly(x))).
+    async def _call_wrapper(*args, __implicitly: Sequence[Any] = (), **kwargs):
+        from pants.engine.internals.selectors import Call
+
+        call = Call(canonical_name, output_type, args, *__implicitly)
+        return await call
+
+    _call_wrapper.__name__ = name
+    _call_wrapper.__qualname__ = name
+    _call_wrapper.__module__ = "pants.engine.intrinsics"
+    _call_wrapper.__annotations__ = {"input": input_type, "return": output_type}
+    _call_wrapper.rule_id = canonical_name
+    _call_wrapper.rule = task_rule
+    return _call_wrapper
+
+
 @overload
 def _uncacheable_rule(
     func: Callable[P, Coroutine[Any, Any, R]],
@@ -575,6 +636,7 @@ class TaskRule:
     cacheable: bool = True
     polymorphic: bool = False
     batchable: bool = False
+    native: bool = False
 
     def __str__(self):
         return "(name={}, {}, {!r}, {}, gets={})".format(

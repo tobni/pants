@@ -703,6 +703,7 @@ def register_rules(rule_index: RuleIndex, union_membership: UnionMembership) -> 
             name=rule.canonical_name,
             desc=rule.desc or "",
             level=rule.level.level,
+            native=rule.native,
         )
 
         for awaitable in rule.awaitables:

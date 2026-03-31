@@ -89,6 +89,9 @@ pub struct Core {
     pub immutable_inputs: ImmutableInputs,
     pub local_execution_root_dir: PathBuf,
     pub generator_batch: crate::batch::GeneratorBatch,
+    /// Map from RuleId to Function for native rules, enabling inline execution
+    /// in the generator loop without scheduling a Task node.
+    pub native_rule_fns: std::collections::HashMap<rule_graph::RuleId, crate::python::Function>,
 }
 
 #[derive(Clone, Debug)]
@@ -739,6 +742,7 @@ impl Core {
 
         let sessions = Sessions::new(&executor)?;
 
+        let native_rule_fns = tasks.native_rule_fns();
         Ok(Core {
             graph,
             tasks,
@@ -763,6 +767,7 @@ impl Core {
             immutable_inputs,
             local_execution_root_dir,
             generator_batch: crate::batch::GeneratorBatch::new(),
+            native_rule_fns,
         })
     }
 

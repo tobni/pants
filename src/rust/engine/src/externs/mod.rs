@@ -454,6 +454,20 @@ impl PyGeneratorResponseNativeCall {
     }
 }
 
+/// Extract a NativeCall from a Value that wraps a PyGeneratorResponseNativeCall.
+/// Used by the native rule short-circuit in run_node.
+pub fn native_call_from_value(py: Python<'_>, value: &Value) -> Result<NativeCall, Failure> {
+    let call = value
+        .bind(py)
+        .extract::<PyRef<PyGeneratorResponseNativeCall>>()
+        .map_err(|e| {
+            Failure::from(format!(
+                "Expected PyGeneratorResponseNativeCall, got: {e}"
+            ))
+        })?;
+    call.take(py).map_err(|e| Failure::from(e))
+}
+
 #[pymethods]
 impl PyGeneratorResponseNativeCall {
     fn __await__(self_: PyRef<'_, Self>) -> PyRef<'_, Self> {

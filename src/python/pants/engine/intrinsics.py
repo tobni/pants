@@ -41,69 +41,42 @@ from pants.engine.process import (
     ProcessResultWithRetries,
     ProcessWithRetries,
 )
-from pants.engine.rules import _uncacheable_rule, collect_rules, implicitly, rule
+from pants.engine.rules import (
+    _uncacheable_rule,
+    collect_rules,
+    implicitly,
+    native_rule,
+    rule,
+)
 from pants.util.docutil import git_url
 from pants.util.frozendict import FrozenDict
 
 
-@rule
-async def create_digest(
-    create_digest: CreateDigest,
-) -> Digest:
-    return await native_engine.create_digest(create_digest)
+# Native rules: pure passthroughs to Rust intrinsics.
+# The engine calls the #[pyfunction] once to get a NativeCall future,
+# then awaits it directly -- skipping the generator protocol.
+create_digest = native_rule(native_engine.create_digest, CreateDigest, Digest)
+path_globs_to_digest = native_rule(native_engine.path_globs_to_digest, PathGlobs, Digest)
+path_globs_to_paths = native_rule(native_engine.path_globs_to_paths, PathGlobs, Paths)
+download_file = native_rule(native_engine.download_file, NativeDownloadFile, Digest)
+digest_to_snapshot = native_rule(native_engine.digest_to_snapshot, Digest, Snapshot)
+get_digest_contents = native_rule(native_engine.get_digest_contents, Digest, DigestContents)
+get_digest_entries = native_rule(native_engine.get_digest_entries, Digest, DigestEntries)
+merge_digests = native_rule(native_engine.merge_digests, MergeDigests, Digest)
+remove_prefix = native_rule(native_engine.remove_prefix, RemovePrefix, Digest)
+add_prefix = native_rule(native_engine.add_prefix, AddPrefix, Digest)
+digest_subset_to_digest = native_rule(
+    native_engine.digest_subset_to_digest, DigestSubset, Digest
+)
+path_metadata_request = native_rule(
+    native_engine.path_metadata_request, PathMetadataRequest, PathMetadataResult
+)
+docker_resolve_image = native_rule(
+    native_engine.docker_resolve_image, DockerResolveImageRequest, DockerResolveImageResult
+)
 
 
-@rule
-async def path_globs_to_digest(
-    path_globs: PathGlobs,
-) -> Digest:
-    return await native_engine.path_globs_to_digest(path_globs)
-
-
-@rule
-async def path_globs_to_paths(
-    path_globs: PathGlobs,
-) -> Paths:
-    return await native_engine.path_globs_to_paths(path_globs)
-
-
-@rule
-async def download_file(
-    native_download_file: NativeDownloadFile,
-) -> Digest:
-    return await native_engine.download_file(native_download_file)
-
-
-@rule
-async def digest_to_snapshot(digest: Digest) -> Snapshot:
-    return await native_engine.digest_to_snapshot(digest)
-
-
-@rule
-async def get_digest_contents(digest: Digest) -> DigestContents:
-    return await native_engine.get_digest_contents(digest)
-
-
-@rule
-async def get_digest_entries(digest: Digest) -> DigestEntries:
-    return await native_engine.get_digest_entries(digest)
-
-
-@rule
-async def merge_digests(merge_digests: MergeDigests) -> Digest:
-    return await native_engine.merge_digests(merge_digests)
-
-
-@rule
-async def remove_prefix(remove_prefix: RemovePrefix) -> Digest:
-    return await native_engine.remove_prefix(remove_prefix)
-
-
-@rule
-async def add_prefix(add_prefix: AddPrefix) -> Digest:
-    return await native_engine.add_prefix(add_prefix)
-
-
+# Rules with real Python logic -- cannot be native_rule.
 @rule
 async def execute_process(
     process: Process, process_execution_environment: ProcessExecutionEnvironment
@@ -121,11 +94,6 @@ async def execute_process_with_retry(req: ProcessWithRetries) -> ProcessResultWi
         if result.exit_code == 0:
             break
     return ProcessResultWithRetries(tuple(results))
-
-
-@rule
-async def digest_subset_to_digest(digest_subset: DigestSubset) -> Digest:
-    return await native_engine.digest_subset_to_digest(digest_subset)
 
 
 @rule
@@ -189,11 +157,6 @@ async def run_interactive_process_in_environment(
 
 
 @rule
-async def docker_resolve_image(request: DockerResolveImageRequest) -> DockerResolveImageResult:
-    return await native_engine.docker_resolve_image(request)
-
-
-@rule
 async def parse_dockerfile_info(
     deps_request: NativeDependenciesRequest,
 ) -> NativeDockerfileInfos:
@@ -215,11 +178,6 @@ async def parse_javascript_deps(
 ) -> NativeJavascriptFilesDependencies:
     path_deps_pairs = await native_engine.parse_javascript_deps(deps_request)
     return NativeJavascriptFilesDependencies(FrozenDict(path_deps_pairs))
-
-
-@rule
-async def path_metadata_request(request: PathMetadataRequest) -> PathMetadataResult:
-    return await native_engine.path_metadata_request(request)
 
 
 def rules():

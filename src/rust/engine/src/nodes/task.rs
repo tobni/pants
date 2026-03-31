@@ -103,6 +103,79 @@ impl Task {
         select(context, call.args, call.args_arity, params, entry).await
     }
 
+    /// Try to execute a rule and its entire dependency chain natively, without
+    /// creating any Task nodes. Returns `None` if any rule in the chain is not
+    /// native, in which case the caller should fall back to `gen_call`.
+    fn try_select_native_inline<'a>(
+        context: &'a Context,
+        mut params: Params,
+        entry: Intern<rule_graph::Entry<Rule>>,
+    ) -> BoxFuture<'a, Option<NodeResult<Value>>> {
+        async move {
+            params.retain(|k| match entry.as_ref() {
+                rule_graph::Entry::Param(type_id) => type_id == k.type_id(),
+                rule_graph::Entry::WithDeps(with_deps) => {
+                    with_deps.params().contains(k.type_id())
+                }
+            });
+            match entry.as_ref() {
+                &rule_graph::Entry::Param(type_id) => {
+                    if let Some(key) = params.find(type_id) {
+                        Some(Ok(key.to_value()))
+                    } else {
+                        // Missing param -- bail to normal path.
+                        None
+                    }
+                }
+                &rule_graph::Entry::WithDeps(wd) => match wd.as_ref() {
+                    rule_graph::EntryWithDeps::Rule(rule) => {
+                        let task = rule.rule().0;
+                        // Only proceed if this rule is native.
+                        if !task.native {
+                            return None;
+                        }
+                        let native_func =
+                            context.core.native_rule_fns.get(&task.id)?;
+
+                        // Resolve deps recursively.
+                        let edges = context.core.rule_graph.edges_for_inner(&entry)?;
+                        let mut deps = Vec::new();
+                        for (_name, dep_key) in task.args.iter() {
+                            let dep_entry = edges.entry_for(dep_key)?;
+                            let dep_result = Self::try_select_native_inline(
+                                context,
+                                params.clone(),
+                                dep_entry,
+                            )
+                            .await?;
+                            let dep_value = match dep_result {
+                                Ok(v) => v,
+                                Err(e) => return Some(Err(e)),
+                            };
+                            deps.push(dep_value);
+                        }
+
+                        // Call the native function with the first dep as input.
+                        let input = deps.into_iter().next().unwrap_or_else(|| {
+                            Python::attach(|py| Value::new(py.None().into()))
+                        });
+                        let native_call = Python::attach(|py| {
+                            let func = native_func.0.value.bind(py);
+                            let result = func.call1((&input,))?;
+                            externs::native_call_from_value(py, &Value::from(&result))
+                        });
+                        match native_call {
+                            Ok(call) => Some((call.call).await),
+                            Err(e) => Some(Err(e)),
+                        }
+                    }
+                    _ => None, // Reentry or Root -- bail.
+                },
+            }
+        }
+        .boxed()
+    }
+
     // Handles the case where a generator produces a generator.
     fn gen_generator(
         context: &Context,
@@ -157,7 +230,63 @@ impl Task {
                 }
                 GeneratorResponse::Call(call) => {
                     let _blocking_token = workunit.blocking();
-                    let result = Self::gen_call(context, params.clone(), entry, call).await;
+                    // Try to execute the entire call chain natively.
+                    // This resolves the call's entry in the rule graph, then
+                    // recursively inlines all native rules in the chain.
+                    // Falls back to gen_call if any rule is non-native.
+                    let result = {
+                        let try_native = || async {
+                            // Resolve the call entry (same logic as gen_call).
+                            let rule_id = context
+                                .core
+                                .tasks
+                                .vtable()
+                                .get(&call.rule_id)
+                                .and_then(|ve| {
+                                    call.inputs
+                                        .iter()
+                                        .map(|t| ve.get(t.type_id()))
+                                        .find(Option::is_some)
+                                        .flatten()
+                                })
+                                .unwrap_or(&call.rule_id);
+                            // Only attempt native inlining if the target rule is native.
+                            context.core.native_rule_fns.get(rule_id)?;
+
+                            let dep_key = DependencyKey::for_known_rule(
+                                rule_id.clone(),
+                                call.output_type,
+                                call.args_arity,
+                            )
+                            .provided_params(call.inputs.iter().map(|t| *t.type_id()));
+
+                            let mut call_params = params.clone();
+                            call_params.extend(call.inputs.iter().cloned());
+
+                            let edges =
+                                context.core.rule_graph.edges_for_inner(&entry)?;
+                            let callee_entry = edges.entry_for(&dep_key).or_else(|| {
+                                let in_scope = call
+                                    .input_types
+                                    .iter()
+                                    .find_map(|t| t.union_in_scope_types())?;
+                                edges.entry_for(&dep_key.in_scope_params(in_scope))
+                            })?;
+
+                            Self::try_select_native_inline(
+                                context,
+                                call_params,
+                                callee_entry,
+                            )
+                            .await
+                        };
+
+                        if let Some(native_result) = try_native().await {
+                            native_result
+                        } else {
+                            Self::gen_call(context, params.clone(), entry, call).await
+                        }
+                    };
                     match result {
                         Ok(value) => {
                             input = GeneratorInput::Arg(value);
@@ -331,10 +460,71 @@ impl Task {
                         pending.push((i, (call.call).boxed()));
                     }
                     Ok(GeneratorResponse::Call(call)) => {
-                        pending.push((
-                            i,
-                            Self::gen_call(context, params[i].clone(), entry, call).boxed(),
-                        ));
+                        {
+                            // Try native chain inlining.
+                            let ctx = context.clone();
+                            let p = params[i].clone();
+                            let e = entry;
+                            pending.push((
+                                i,
+                                async move {
+                                    let try_native = || async {
+                                        let rule_id = ctx
+                                            .core
+                                            .tasks
+                                            .vtable()
+                                            .get(&call.rule_id)
+                                            .and_then(|ve| {
+                                                call.inputs
+                                                    .iter()
+                                                    .map(|t| ve.get(t.type_id()))
+                                                    .find(Option::is_some)
+                                                    .flatten()
+                                            })
+                                            .unwrap_or(&call.rule_id);
+                                        ctx.core.native_rule_fns.get(rule_id)?;
+
+                                        let dep_key = DependencyKey::for_known_rule(
+                                            rule_id.clone(),
+                                            call.output_type,
+                                            call.args_arity,
+                                        )
+                                        .provided_params(
+                                            call.inputs.iter().map(|t| *t.type_id()),
+                                        );
+
+                                        let mut call_params = p.clone();
+                                        call_params.extend(call.inputs.iter().cloned());
+
+                                        let edges =
+                                            ctx.core.rule_graph.edges_for_inner(&e)?;
+                                        let callee_entry =
+                                            edges.entry_for(&dep_key).or_else(|| {
+                                                let in_scope = call
+                                                    .input_types
+                                                    .iter()
+                                                    .find_map(|t| t.union_in_scope_types())?;
+                                                edges
+                                                    .entry_for(&dep_key.in_scope_params(in_scope))
+                                            })?;
+
+                                        Task::try_select_native_inline(
+                                            &ctx,
+                                            call_params,
+                                            callee_entry,
+                                        )
+                                        .await
+                                    };
+
+                                    if let Some(native_result) = try_native().await {
+                                        native_result
+                                    } else {
+                                        Task::gen_call(&ctx, p, e, call).await
+                                    }
+                                }
+                                .boxed(),
+                            ));
+                        }
                     }
                     Ok(GeneratorResponse::All(gens)) => {
                         let ctx = context.clone();
@@ -421,6 +611,41 @@ impl Task {
             )
             .await?
         };
+
+        // Native rule short-circuit: call the #[pyfunction] once to get the
+        // NativeCall future, then await it directly. Skips generator creation and
+        // the second GIL round-trip.
+        if self.task.native {
+            let args = self.args;
+            let task = self.task.clone();
+            // Call the Python function to get the PyGeneratorResponseNativeCall.
+            let (result_val, _result_type) = task_context(
+                context.clone(),
+                self.task.side_effecting,
+                &self.side_effected,
+                async move { Self::call_rule_function(&task, &args, self.args_arity, deps) },
+            )
+            .await?;
+
+            // Extract the NativeCall future from the result and await it directly.
+            let native_call = Python::attach(|py| {
+                externs::native_call_from_value(py, &result_val)
+            })?;
+            let result = task_context(
+                context.clone(),
+                self.task.side_effecting,
+                &self.side_effected,
+                async move { (native_call.call).await },
+            )
+            .await?;
+
+            if self.task.engine_aware_return_type {
+                Python::attach(|py| {
+                    EngineAwareReturnType::update_workunit(workunit, result.bind(py))
+                });
+            }
+            return Ok(result);
+        }
 
         // Create the Python generator/result.
         let args = self.args;
