@@ -1075,6 +1075,33 @@ class FileDigest:
     def __hash__(self) -> int: ...
     def __repr__(self) -> str: ...
 
+@final
+class AncestorFilesRequest:
+    """A request for ancestor files of the given names.
+
+    "Ancestor files" means all files with one of the given names that are siblings of, or in parent
+    directories of, a `.py` or `.pyi` file in the input_files.
+    """
+
+    input_files: tuple[str, ...]
+    requested: tuple[str, ...]
+    ignore_empty_files: bool
+
+    def __init__(
+        self,
+        input_files: Sequence[str],
+        requested: Sequence[str],
+        ignore_empty_files: bool = False,
+    ) -> None: ...
+
+@final
+class AncestorFiles:
+    """Any ancestor files found."""
+
+    snapshot: Snapshot
+
+    def __init__(self, snapshot: Snapshot) -> None: ...
+
 class Snapshot:
     """A Snapshot is a collection of sorted file paths and dir paths fingerprinted by their
     names/content.
@@ -1260,6 +1287,7 @@ async def download_file(
     native_download_file: NativeDownloadFile,
 ) -> Digest: ...
 async def digest_to_snapshot(digest: Digest) -> Snapshot: ...
+async def find_ancestor_files(request: AncestorFilesRequest) -> AncestorFiles: ...
 async def get_digest_contents(digest: Digest) -> DigestContents: ...
 async def get_digest_entries(digest: Digest) -> DigestEntries: ...
 async def merge_digests(merge_digests: MergeDigests) -> Digest: ...

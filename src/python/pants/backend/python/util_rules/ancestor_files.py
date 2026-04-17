@@ -4,31 +4,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 
-from pants.engine.fs import EMPTY_SNAPSHOT, PathGlobs, Snapshot
-from pants.engine.intrinsics import digest_to_snapshot, get_digest_contents
-from pants.engine.rules import collect_rules, implicitly, rule
-
-
-@dataclass(frozen=True)
-class AncestorFilesRequest:
-    """A request for ancestor files of the given names.
-
-    "Ancestor files" means all files with one of the given names that are siblings of, or in parent
-    directories of, a `.py` or `.pyi` file in the input_files.
-    """
-
-    input_files: tuple[str, ...]
-    requested: tuple[str, ...]
-    ignore_empty_files: bool = False
-
-
-@dataclass(frozen=True)
-class AncestorFiles:
-    """Any ancestor files found."""
-
-    snapshot: Snapshot
+from pants.engine.internals.native_engine import AncestorFiles as AncestorFiles  # noqa: F401
+from pants.engine.internals.native_engine import (  # noqa: F401
+    AncestorFilesRequest as AncestorFilesRequest,
+)
+from pants.engine.internals.native_engine import find_ancestor_files as _native_find_ancestor_files
+from pants.engine.rules import collect_rules, rule
 
 
 def putative_ancestor_files(input_files: tuple[str, ...], requested: tuple[str, ...]) -> set[str]:
@@ -59,21 +41,7 @@ def putative_ancestor_files(input_files: tuple[str, ...], requested: tuple[str, 
 
 @rule
 async def find_ancestor_files(request: AncestorFilesRequest) -> AncestorFiles:
-    putative = putative_ancestor_files(request.input_files, request.requested)
-    if not putative:
-        return AncestorFiles(EMPTY_SNAPSHOT)
-
-    # NB: This will intentionally _not_ error on any unmatched globs.
-    globs = PathGlobs(putative)
-    if request.ignore_empty_files:
-        digest_contents = await get_digest_contents(**implicitly({globs: PathGlobs}))
-        snapshot = await digest_to_snapshot(
-            **implicitly(PathGlobs([fc.path for fc in digest_contents if fc.content.strip()]))
-        )
-    else:
-        snapshot = await digest_to_snapshot(**implicitly({globs: PathGlobs}))
-
-    return AncestorFiles(snapshot)
+    return await _native_find_ancestor_files(request)
 
 
 def rules():

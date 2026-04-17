@@ -28,6 +28,7 @@ use crate::interning::Interns;
 use crate::python::{Failure, Key, TypeId, Value};
 
 mod address;
+pub mod ancestor_files;
 pub mod dep_inference;
 pub mod engine_aware;
 mod frozendict;

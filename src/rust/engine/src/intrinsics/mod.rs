@@ -8,6 +8,7 @@ use pyo3::{Bound, PyResult, Python};
 pub mod native_rule;
 
 // Sub-modules with intrinsic implementations.
+mod ancestor_files;
 mod dep_inference;
 mod digests;
 mod docker;
@@ -18,6 +19,7 @@ mod values;
 pub use interactive_process::interactive_process_inner;
 
 pub fn register(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    ancestor_files::register(py, m)?;
     dep_inference::register(py, m)?;
     digests::register(py, m)?;
     docker::register(py, m)?;
