@@ -267,7 +267,7 @@ impl StoreFileByDigest<String> for OneOffStoreFileByDigest {
         let immutable = self.immutable;
         let res = async move {
             let path = fs.file_path(&file);
-            store.store_file(true, immutable, path).await
+            store.store_file(immutable, path).await
         };
         res.boxed()
     }

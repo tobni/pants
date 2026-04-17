@@ -478,14 +478,11 @@ async fn execute(top_match: &clap::ArgMatches) -> Result<(), ExitError> {
                         })?;
                     match file {
                         fs::Stat::File(f) => {
-                            let digest = store::OneOffStoreFileByDigest::new(
-                                store.clone(),
-                                Arc::new(fs),
-                                false,
-                            )
-                            .store_by_digest(f)
-                            .await
-                            .unwrap();
+                            let digest =
+                                store::OneOffStoreFileByDigest::new(store.clone(), Arc::new(fs), false)
+                                    .store_by_digest(f)
+                                    .await
+                                    .unwrap();
 
                             let report =
                                 ensure_uploaded_to_remote(&store, store_has_remote, digest)

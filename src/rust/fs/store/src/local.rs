@@ -13,16 +13,17 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::{self, join_all, try_join, try_join_all};
 use hashing::{
-    AgedFingerprint, Digest, EMPTY_DIGEST, Fingerprint, async_copy_and_hash, async_verified_copy,
+    AgedFingerprint, Digest, EMPTY_DIGEST, Fingerprint, WriterHasher, async_copy_and_hash,
+    async_verified_copy, sync_verified_copy,
 };
 use parking_lot::Mutex;
 use sharded_lmdb::ShardedLmdb;
 use std::os::unix::fs::PermissionsExt;
 use task_executor::Executor;
-use tempfile::Builder;
+use tempfile::{Builder, TempPath};
 use tokio::fs::hard_link;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
 use workunit_store::ObservationMetric;
 
 /// How big a file must be to be stored as a file on disk.
@@ -52,15 +53,6 @@ trait UnderlyingByteStore {
         &self,
         items: Vec<(Fingerprint, Bytes)>,
         initial_lease: bool,
-    ) -> Result<(), String>;
-
-    async fn store(
-        &self,
-        initial_lease: bool,
-        src_is_immutable: bool,
-        expected_digest: Digest,
-        file_source: &FileSource,
-        src: PathBuf,
     ) -> Result<(), String>;
 
     async fn load_bytes_with<
@@ -110,26 +102,6 @@ impl UnderlyingByteStore for ShardedLmdb {
     ) -> Result<(), String> {
         self.store_bytes_batch(items, initial_lease).await
     }
-    async fn store(
-        &self,
-        initial_lease: bool,
-        src_is_immutable: bool,
-        expected_digest: Digest,
-        _file_source: &FileSource,
-        src: PathBuf,
-    ) -> Result<(), String> {
-        self.store(
-            initial_lease,
-            src_is_immutable,
-            expected_digest,
-            move || {
-                // NB: This file access is bounded by the number of blocking threads on the runtime, and
-                // so we don't bother to acquire against the file handle limit in this case.
-                std::fs::File::open(&src)
-            },
-        )
-        .await
-    }
 
     async fn load_bytes_with<
         T: Send + 'static,
@@ -158,17 +130,6 @@ pub(crate) struct ShardedFSDB {
     dest_initializer: Arc<Mutex<HashMap<Fingerprint, Arc<OnceCell<()>>>>>,
     // A cache of whether destination root directories are hardlinkable from the fsdb.
     hardlinkable_destinations: Arc<Mutex<HashMap<PathBuf, Arc<OnceCell<bool>>>>>,
-}
-
-enum VerifiedCopyError {
-    CopyFailure(String),
-    DoesntMatch,
-}
-
-impl From<String> for VerifiedCopyError {
-    fn from(err: String) -> Self {
-        Self::CopyFailure(err)
-    }
 }
 
 impl ShardedFSDB {
@@ -236,26 +197,53 @@ impl ShardedFSDB {
         Ok(file)
     }
 
-    async fn verified_copier<R>(
-        mut file: tokio::fs::File,
-        expected_digest: Digest,
-        src_is_immutable: bool,
-        mut reader: R,
-    ) -> Result<tokio::fs::File, VerifiedCopyError>
-    where
-        R: AsyncRead + Unpin,
-    {
-        let matches =
-            async_verified_copy(expected_digest, src_is_immutable, &mut reader, &mut file)
-                .await
-                .map_err(|e| {
-                    VerifiedCopyError::CopyFailure(format!("Failed to copy bytes: {e}"))
-                })?;
-        if matches {
-            Ok(file)
-        } else {
-            Err(VerifiedCopyError::DoesntMatch)
-        }
+    /// Creates a `.tmp`-suffixed tempfile in `dir`. The returned `TempPath` removes the file on
+    /// drop unless `keep`/`persist`ed, so callers get cleanup on every early return for free.
+    async fn new_tempfile_in(&self, dir: PathBuf) -> Result<(tokio::fs::File, TempPath), String> {
+        let named_temp_file = self
+            .executor
+            .spawn_blocking(move || {
+                Builder::new()
+                    .suffix(".tmp")
+                    .tempfile_in(&dir)
+                    .map_err(|e| format!("Failed to create temp file: {e}"))
+            })
+            .await
+            .map_err(|e| format!("temp file creation task failed: {e}"))
+            .flatten()?;
+        let (std_file, tmp_path) = named_temp_file.into_parts();
+        Ok((tokio::fs::File::from(std_file), tmp_path))
+    }
+
+    /// Flushes, hardens (chmod 0o555 + fsync) and atomically renames a tempfile into its final
+    /// content-addressed location.
+    async fn finalize_into_place(
+        writer: &mut tokio::fs::File,
+        tmp_path: &Path,
+        dest_path: &Path,
+    ) -> Result<(), String> {
+        writer
+            .shutdown()
+            .await
+            .map_err(|e| format!("Failed to shutdown {tmp_path:?}: {e}"))?;
+        tokio::fs::set_permissions(tmp_path, std::fs::Permissions::from_mode(0o555))
+            .await
+            .map_err(|e| format!("Failed to set permissions on {tmp_path:?}: {e}"))?;
+        // NB: Syncing metadata to disk ensures the `hard_link` we do later has the opportunity to
+        // succeed. Otherwise, if later when we try to `hard_link` the metadata isn't persisted to
+        // disk, we'll get `No such file or directory`.
+        // See https://github.com/pantsbuild/pants/pull/18768
+        writer
+            .sync_all()
+            .await
+            .map_err(|e| format!("Failed to sync {tmp_path:?}: {e}"))?;
+        tokio::fs::create_dir_all(dest_path.parent().unwrap())
+            .await
+            .map_err(|e| format!("Failed to create local store subdirectory {dest_path:?}: {e}"))?;
+        tokio::fs::rename(tmp_path, dest_path)
+            .await
+            .map_err(|e| format!("Error while renaming: {e}."))?;
+        Ok(())
     }
 
     pub(crate) async fn write_using<E, F, Fut>(
@@ -277,60 +265,82 @@ impl ShardedFSDB {
             .clone();
         cell.get_or_try_init(async {
             let dest_path = self.get_path(fingerprint);
+            // Make the tempfile in the same dir as the final file so that materializing the final
+            // file doesn't have to worry about parent dirs.
             tokio::fs::create_dir_all(dest_path.parent().unwrap())
                 .await
                 .map_err(
                     |e| format! {"Failed to create local store subdirectory {dest_path:?}: {e}"},
                 )?;
-
-            let dest_path2 = dest_path.clone();
-            // Make the tempfile in the same dir as the final file so that materializing the final file doesn't
-            // have to worry about parent dirs.
-            let named_temp_file = self
-                .executor
-                .spawn_blocking(move || {
-                    Builder::new()
-                        .suffix(".tmp")
-                        .tempfile_in(dest_path2.parent().unwrap())
-                        .map_err(|e| format!("Failed to create temp file: {e}"))
-                })
-                .await
-                .map_err(|e| format!("temp file creation task failed: {e}"))
-                .flatten()?;
-            let (std_file, tmp_path) = named_temp_file
+            let (file, tmp_path) = self
+                .new_tempfile_in(dest_path.parent().unwrap().to_owned())
+                .await?;
+            // On any error before the rename, `tmp_path` drops and removes the temp file.
+            let mut tokio_file = writer_func(file).await?;
+            Self::finalize_into_place(&mut tokio_file, &tmp_path, &dest_path).await?;
+            tmp_path
                 .keep()
                 .map_err(|e| format!("Failed to keep temp file: {e}"))?;
-
-            match writer_func(std_file.into()).await {
-                Ok(mut tokio_file) => {
-                    tokio_file
-                        .shutdown()
-                        .await
-                        .map_err(|e| format!("Failed to shutdown {tmp_path:?}: {e}"))?;
-                    tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o555))
-                        .await
-                        .map_err(|e| format!("Failed to set permissions on {tmp_path:?}: {e}"))?;
-                    // NB: Syncing metadata to disk ensures the `hard_link` we do later has the opportunity
-                    // to succeed. Otherwise, if later when we try to `hard_link` the metadata isn't
-                    // persisted to disk, we'll get `No such file or directory`.
-                    // See https://github.com/pantsbuild/pants/pull/18768
-                    tokio_file
-                        .sync_all()
-                        .await
-                        .map_err(|e| format!("Failed to sync {tmp_path:?}: {e}"))?;
-                    tokio::fs::rename(tmp_path.clone(), dest_path.clone())
-                        .await
-                        .map_err(|e| format!("Error while renaming: {e}."))?;
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = tokio::fs::remove_file(tmp_path).await;
-                    Err(e)
-                }
-            }
+            Ok(())
         })
         .await
         .cloned()
+    }
+
+    /// Streams `reader` into a temp file inside the FSDB while hashing it, returning the
+    /// handle to the caller for inspection before publishing. The caller must either call
+    /// `publish_staged` to finalize or drop the result (the temp file remains on disk until
+    /// mtime GC if neither).
+    async fn stream_to_tempfile(
+        &self,
+        reader: &mut tokio::fs::File,
+        src: &Path,
+    ) -> Result<(Digest, tokio::fs::File, TempPath), String> {
+        let (mut writer, tmp_path) = self.new_tempfile_in(self.root.join(".tmp")).await?;
+        match async_copy_and_hash(reader, &mut writer).await {
+            // On error `tmp_path` drops and removes the temp file.
+            Ok(digest) => Ok((digest, writer, tmp_path)),
+            Err(e) => Err(format!(
+                "Failed to copy-and-hash {src:?} -> {tmp_path:?}: {e}"
+            )),
+        }
+    }
+
+    /// Publishes a temp file (produced by `stream_to_tempfile`) under the given digest. At
+    /// most one publish per digest actually renames; concurrent callers with the same
+    /// fingerprint see the existing entry and the redundant temp is removed when `tmp_path`
+    /// drops.
+    async fn publish_staged(
+        &self,
+        digest: Digest,
+        writer: tokio::fs::File,
+        tmp_path: TempPath,
+    ) -> Result<(), String> {
+        let cell = self
+            .dest_initializer
+            .lock()
+            .entry(digest.hash)
+            .or_default()
+            .clone();
+
+        let dest_path = self.get_path(digest.hash);
+        let tmp_path_for_init = tmp_path.to_path_buf();
+        // The finalize dance (flush/chmod/fsync/rename) runs at most once per digest: if a
+        // concurrent caller already published this fingerprint, the closure never runs and
+        // the expensive fsync is skipped.
+        let init_result: Result<(), String> = cell
+            .get_or_try_init(async move {
+                let mut writer = writer;
+                Self::finalize_into_place(&mut writer, &tmp_path_for_init, &dest_path).await
+            })
+            .await
+            .cloned();
+
+        // Dropping `tmp_path` is a no-op if we renamed into place; otherwise (race loser or
+        // finalize error) it removes the redundant/abandoned temp.
+        drop(tmp_path);
+
+        init_result
     }
 }
 
@@ -391,50 +401,6 @@ impl UnderlyingByteStore for ShardedFSDB {
             Ok::<(), String>(())
         }))
         .await?;
-
-        Ok(())
-    }
-
-    async fn store(
-        &self,
-        _initial_lease: bool,
-        src_is_immutable: bool,
-        expected_digest: Digest,
-        file_source: &FileSource,
-        src: PathBuf,
-    ) -> Result<(), String> {
-        let mut attempts = 0;
-        loop {
-            let (reader, _permit) = file_source
-                .open_readonly(&src)
-                .await
-                .map_err(|e| format!("Failed to open {src:?}: {e}"))?;
-
-            // TODO: Consider using `fclonefileat` on macOS or checking for same filesystem+rename on Linux,
-            // which would skip actual copying (read+write), and instead just require verifying the
-            // resulting content after the syscall (read only).
-            let copy_result = self
-                .write_using(expected_digest.hash, |file| {
-                    Self::verified_copier(file, expected_digest, src_is_immutable, reader)
-                })
-                .await;
-            let should_retry = match copy_result {
-                Ok(()) => Ok(false),
-                Err(VerifiedCopyError::CopyFailure(s)) => Err(s),
-                Err(VerifiedCopyError::DoesntMatch) => Ok(true),
-            };
-
-            if should_retry? {
-                attempts += 1;
-                let msg = format!("Input {src:?} changed while reading.");
-                log::debug!("{msg}");
-                if attempts > 10 {
-                    return Err(format!("Failed to store {src:?}."));
-                }
-            } else {
-                break;
-            }
-        }
 
         Ok(())
     }
@@ -521,29 +487,6 @@ impl UnderlyingByteStore for ShardedFSDB {
     }
 }
 
-/// A best-effort limit on the number of concurrent attempts to open files.
-#[derive(Debug)]
-struct FileSource {
-    open_files: Semaphore,
-}
-
-impl FileSource {
-    async fn open_readonly(
-        &self,
-        path: &Path,
-    ) -> Result<(tokio::fs::File, SemaphorePermit<'_>), String> {
-        let permit = self
-            .open_files
-            .acquire()
-            .await
-            .map_err(|e| format!("Failed to acquire permit to open file: {e}"))?;
-        let file = tokio::fs::File::open(path)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok((file, permit))
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ByteStore {
     inner: Arc<InnerStore>,
@@ -557,7 +500,8 @@ struct InnerStore {
     file_lmdb: Result<Arc<ShardedLmdb>, String>,
     directory_lmdb: Result<Arc<ShardedLmdb>, String>,
     file_fsdb: ShardedFSDB,
-    file_source: FileSource,
+    /// A best-effort limit on the number of concurrent attempts to open files.
+    open_files: Semaphore,
 }
 
 impl ByteStore {
@@ -582,6 +526,9 @@ impl ByteStore {
             .map_err(|e| format!("Failed to create {}: {e}", root.display()))?;
         std::fs::create_dir_all(&fsdb_files_root)
             .map_err(|e| format!("Failed to create {}: {e}", fsdb_files_root.display()))?;
+        let fsdb_tmp_dir = fsdb_files_root.join(".tmp");
+        std::fs::create_dir_all(&fsdb_tmp_dir)
+            .map_err(|e| format!("Failed to create {}: {e}", fsdb_tmp_dir.display()))?;
 
         Ok(ByteStore {
             inner: Arc::new(InnerStore {
@@ -602,7 +549,7 @@ impl ByteStore {
                 )
                 .map(Arc::new),
                 file_fsdb: ShardedFSDB {
-                    executor: executor,
+                    executor,
                     root: fsdb_files_root,
                     lease_time: options.lease_time,
                     dest_initializer: Arc::new(Mutex::default()),
@@ -612,9 +559,7 @@ impl ByteStore {
                 // enough to be a "reasonable" number of open files to set in `ulimit`. This is a
                 // best-effort limit (because it does-not/cannot cover all of the places where we open
                 // files).
-                file_source: FileSource {
-                    open_files: Semaphore::new(1024),
-                },
+                open_files: Semaphore::new(1024),
             }),
         })
     }
@@ -813,54 +758,171 @@ impl ByteStore {
     }
 
     ///
-    /// Store data in two passes, without buffering it entirely into memory. Prefer
-    /// `Self::store_bytes` for small values which fit comfortably in memory.
+    /// Store the file at `src` under its content-addressed digest. Large files stream through
+    /// the FSDB; small files go through `store_bytes`.
+    ///
+    /// When `immutable` is false the source is re-hashed cache-warm after the first read and the
+    /// store retries up to `MAX_STORE_ATTEMPTS` times if a torn read is detected. When `immutable`
+    /// is true the caller guarantees the source cannot change underneath us, so that verification
+    /// pass is skipped and the source is read exactly once.
+    ///
+    /// Always sets an initial lease on the small-file (LMDB) path; no-op for FSDB, which
+    /// uses file mtime as the lease timestamp.
     ///
     pub async fn store(
         &self,
         entry_type: EntryType,
-        initial_lease: bool,
-        src_is_immutable: bool,
+        immutable: bool,
         src: PathBuf,
     ) -> Result<Digest, String> {
-        let digest = {
-            let (mut file, _permit) = self
-                .inner
-                .file_source
-                .open_readonly(&src)
-                .await
-                .map_err(|e| format!("Failed to open {src:?}: {e}"))?;
-            async_copy_and_hash(&mut file, &mut tokio::io::sink())
-                .await
-                .map_err(|e| format!("Failed to hash {src:?}: {e}"))?
-        };
+        const MAX_STORE_ATTEMPTS: usize = 10;
 
-        if ByteStore::should_use_fsdb(entry_type, digest.size_bytes) {
-            self.inner
-                .file_fsdb
-                .store(
-                    initial_lease,
-                    src_is_immutable,
-                    digest,
-                    &self.inner.file_source,
-                    src,
-                )
-                .await?;
-        } else {
-            let dbs = match entry_type {
-                EntryType::Directory => self.inner.directory_lmdb.clone()?,
-                EntryType::File => self.inner.file_lmdb.clone()?,
-            };
-            let _ = dbs
-                .store(initial_lease, src_is_immutable, digest, move || {
-                    // NB: This file access is bounded by the number of blocking threads on the runtime, and
-                    // so we don't bother to acquire against the file handle limit in this case.
-                    std::fs::File::open(&src)
-                })
-                .await;
+        for attempt in 1..=MAX_STORE_ATTEMPTS {
+            let permit = self
+                .inner
+                .open_files
+                .acquire()
+                .await
+                .map_err(|e| format!("Failed to acquire permit to open file: {e}"))?;
+
+            match self.read_source_attempt(entry_type, immutable, src.clone()).await? {
+                ReadAttempt::Small { bytes, digest } => {
+                    // Source fd is already closed; release the open-file permit before the LMDB write.
+                    drop(permit);
+                    // `read_source_attempt` already settled the routing (larger reads are
+                    // re-classified as torn), so write straight to LMDB rather than going through
+                    // `store_bytes`, which would re-run the size check and issue a no-op FSDB batch.
+                    let dbs = match entry_type {
+                        EntryType::Directory => self.inner.directory_lmdb.clone()?,
+                        EntryType::File => self.inner.file_lmdb.clone()?,
+                    };
+                    dbs.store_bytes_batch(vec![(digest.hash, bytes)], true).await?;
+                    return Ok(digest);
+                }
+                ReadAttempt::Large(file) => {
+                    let result = self.try_stream_large(&src, immutable, file).await;
+                    drop(permit);
+                    if let Some(digest) = result? {
+                        return Ok(digest);
+                    }
+                }
+                ReadAttempt::Torn => {
+                    drop(permit);
+                }
+            }
+
+            if attempt < MAX_STORE_ATTEMPTS {
+                log::debug!("Input {src:?} changed while reading (attempt {attempt}).");
+            }
         }
 
-        Ok(digest)
+        Err(format!(
+            "Failed to store {src:?}: source kept changing across {MAX_STORE_ATTEMPTS} read attempts."
+        ))
+    }
+
+    /// Small files are read into a buffer while hashing, then (unless `immutable`) the fd is
+    /// rewound and re-hashed cache-warm to confirm the bytes didn't change during the first read.
+    /// Large files hand the open fd back for async streaming; the post-stream verification happens
+    /// in `try_stream_large`.
+    ///
+    /// For mutable sources the re-read is load-bearing: it's what catches an in-place same-length
+    /// rewrite that a single pass can't distinguish from a coherent read. For immutable sources
+    /// there is nothing to detect, so the re-read is skipped and the source is read exactly once.
+    async fn read_source_attempt(
+        &self,
+        entry_type: EntryType,
+        immutable: bool,
+        src: PathBuf,
+    ) -> Result<ReadAttempt, String> {
+        self.inner
+            .file_fsdb
+            .executor
+            .spawn_blocking(move || -> Result<ReadAttempt, String> {
+                use std::io::{Seek, SeekFrom};
+
+                let mut file = std::fs::File::open(&src)
+                    .map_err(|e| format!("Failed to open {src:?}: {e}"))?;
+                let size = file
+                    .metadata()
+                    .map_err(|e| format!("Failed to stat {src:?}: {e}"))?
+                    .len() as usize;
+
+                if ByteStore::should_use_fsdb(entry_type, size) {
+                    return Ok(ReadAttempt::Large(file));
+                }
+
+                let mut buf = Vec::with_capacity(size);
+                let mut hasher = WriterHasher::new(&mut buf);
+                std::io::copy(&mut file, &mut hasher)
+                    .map_err(|e| format!("Failed to read {src:?}: {e}"))?;
+                let (digest, _) = hasher.finish();
+
+                // If the file grew past the streaming threshold while we were reading it, the
+                // size-based routing was decided on stale metadata. Re-route by classifying this
+                // as a torn read; the retry re-stats and streams it instead of holding the whole
+                // (now-large) file in memory.
+                if ByteStore::should_use_fsdb(entry_type, buf.len()) {
+                    return Ok(ReadAttempt::Torn);
+                }
+
+                if !immutable {
+                    file.seek(SeekFrom::Start(0))
+                        .map_err(|e| format!("Failed to rewind {src:?}: {e}"))?;
+                    let matches = sync_verified_copy(digest, false, &mut file, &mut std::io::sink())
+                        .map_err(|e| format!("Failed to verify {src:?}: {e}"))?;
+                    if !matches {
+                        return Ok(ReadAttempt::Torn);
+                    }
+                }
+
+                Ok(ReadAttempt::Small {
+                    bytes: Bytes::from(buf),
+                    digest,
+                })
+            })
+            .await
+            .map_err(|e| format!("`store` read task failed: {e}"))
+            .flatten()
+    }
+
+    /// Streams into a staged tempfile and publishes it. For mutable sources the source fd is
+    /// rewound and re-hashed cache-warm first, and the tempfile is published only if the re-hash
+    /// matches; on a torn read it is discarded so nothing lands in the CAS under a hash of torn
+    /// content. For immutable sources the verification pass is skipped (the source is read once).
+    async fn try_stream_large(
+        &self,
+        src: &Path,
+        immutable: bool,
+        file: std::fs::File,
+    ) -> Result<Option<Digest>, String> {
+        use tokio::io::AsyncSeekExt;
+
+        let mut tokio_file = tokio::fs::File::from_std(file);
+        let (digest, writer, tmp_path) = self
+            .inner
+            .file_fsdb
+            .stream_to_tempfile(&mut tokio_file, src)
+            .await?;
+        // On any error or a torn read below, `tmp_path` drops and removes the staged temp file.
+        if !immutable {
+            tokio_file
+                .seek(std::io::SeekFrom::Start(0))
+                .await
+                .map_err(|e| format!("Failed to rewind {src:?}: {e}"))?;
+            let matches =
+                async_verified_copy(digest, false, &mut tokio_file, &mut tokio::io::sink())
+                    .await
+                    .map_err(|e| format!("Failed to verify {src:?}: {e}"))?;
+            if !matches {
+                return Ok(None);
+            }
+        }
+        self.inner
+            .file_fsdb
+            .publish_staged(digest, writer, tmp_path)
+            .await?;
+        Ok(Some(digest))
     }
 
     ///
@@ -996,4 +1058,10 @@ impl ByteStore {
     pub(crate) fn get_file_fsdb(&self) -> ShardedFSDB {
         self.inner.file_fsdb.clone()
     }
+}
+
+enum ReadAttempt {
+    Small { bytes: Bytes, digest: Digest },
+    Large(std::fs::File),
+    Torn,
 }

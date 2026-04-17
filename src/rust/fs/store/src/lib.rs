@@ -478,15 +478,8 @@ impl Store {
     ///
     /// Store a file locally by streaming its contents.
     ///
-    pub async fn store_file(
-        &self,
-        initial_lease: bool,
-        data_is_immutable: bool,
-        src: PathBuf,
-    ) -> Result<Digest, String> {
-        self.local
-            .store(EntryType::File, initial_lease, data_is_immutable, src)
-            .await
+    pub async fn store_file(&self, immutable: bool, src: PathBuf) -> Result<Digest, String> {
+        self.local.store(EntryType::File, immutable, src).await
     }
 
     /// Store a digest under a given file path, returning a Snapshot
