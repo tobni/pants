@@ -74,7 +74,7 @@ pub static BANNED_CHARS_IN_TARGET_NAME: [char; 8] = [':', '#', '!', '@', '?', '/
 pub static BANNED_CHARS_IN_GENERATED_NAME: [char; 6] = [':', '#', '!', '@', '?', '='];
 pub static BANNED_CHARS_IN_PARAMETERS: [char; 8] = [':', '#', '!', '@', '?', '=', ',', ' '];
 
-#[pyclass(name = "AddressInput")]
+#[pyclass(name = "AddressInput", frozen)]
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct AddressInput {
     original_spec: String,
