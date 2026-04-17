@@ -79,6 +79,7 @@ fn native_engine(py: Python, m: &Bound<'_, PyModule>) -> PyO3Result<()> {
     externs::testutil::register(m)?;
     externs::workunits::register(m)?;
     externs::dep_inference::register(m)?;
+    externs::ancestor_files::register(m)?;
     externs::unions::register(py, m)?;
     externs::frozendict::register(py, m)?;
 
