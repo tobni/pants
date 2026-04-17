@@ -76,11 +76,7 @@ where
 }
 
 /// Adapter for a native rule taking two Python-side arguments.
-pub fn native_call2<I1, I2, O, F, Fut>(
-    a: Value,
-    b: Value,
-    body: F,
-) -> PyGeneratorResponseNativeCall
+pub fn native_call2<I1, I2, O, F, Fut>(a: Value, b: Value, body: F) -> PyGeneratorResponseNativeCall
 where
     I1: NativeRuleInput,
     I2: NativeRuleInput,

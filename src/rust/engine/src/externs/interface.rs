@@ -1149,7 +1149,7 @@ fn session_run_interactive_process(
             context.clone(),
             true,
             &Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            intrinsics::interactive_process_inner(&context, interactive_process, process_config),
+            intrinsics::interactive_process_inner(interactive_process, process_config),
         ))
     })
     .map(|v| v.into())
