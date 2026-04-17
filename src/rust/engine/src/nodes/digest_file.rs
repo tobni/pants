@@ -22,12 +22,7 @@ pub struct DigestFile {
 impl DigestFile {
     pub(super) async fn run_node(self, context: Context) -> NodeResult<hashing::Digest> {
         let path = context.core.vfs.file_path(&self.file);
-        context
-            .core
-            .store()
-            .store_file(path)
-            .map_err(throw)
-            .await
+        context.core.store().store_file(path).map_err(throw).await
     }
 }
 

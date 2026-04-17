@@ -170,8 +170,7 @@ impl Snapshot {
                 .expand_globs(path_globs, SymlinkBehavior::Oblivious, None)
                 .await
                 .map_err(|err| format!("Error expanding globs: {err}"))?;
-            Snapshot::from_path_stats(OneOffStoreFileByDigest::new(store, fs), path_stats)
-                .await
+            Snapshot::from_path_stats(OneOffStoreFileByDigest::new(store, fs), path_stats).await
         }
     }
 

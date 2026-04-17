@@ -791,11 +791,7 @@ impl ByteStore {
     /// Always sets an initial lease on the small-file (LMDB) path; no-op for FSDB, which
     /// uses file mtime as the lease timestamp.
     ///
-    pub async fn store(
-        &self,
-        entry_type: EntryType,
-        src: PathBuf,
-    ) -> Result<Digest, String> {
+    pub async fn store(&self, entry_type: EntryType, src: PathBuf) -> Result<Digest, String> {
         const MAX_STORE_ATTEMPTS: usize = 10;
 
         for attempt in 1..=MAX_STORE_ATTEMPTS {
@@ -909,10 +905,9 @@ impl ByteStore {
             .seek(std::io::SeekFrom::Start(0))
             .await
             .map_err(|e| format!("Failed to rewind {src:?}: {e}"))?;
-        let matches =
-            async_verified_copy(digest, false, &mut tokio_file, &mut tokio::io::sink())
-                .await
-                .map_err(|e| format!("Failed to verify {src:?}: {e}"))?;
+        let matches = async_verified_copy(digest, false, &mut tokio_file, &mut tokio::io::sink())
+            .await
+            .map_err(|e| format!("Failed to verify {src:?}: {e}"))?;
         if !matches {
             drop(writer);
             let _ = tokio::fs::remove_file(&tmp_path).await;

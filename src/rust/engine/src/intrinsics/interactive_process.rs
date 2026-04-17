@@ -12,43 +12,39 @@ use process_execution::local::{
 };
 use process_execution::{ManagedChild, ProcessExecutionStrategy};
 use pyo3::Bound;
-use pyo3::prelude::{PyAny, PyModule, PyResult, Python, pyfunction, wrap_pyfunction};
+use pyo3::prelude::{PyAny, PyModule, PyResult, Python, wrap_pyfunction};
 use pyo3::pybacked::PyBackedStr;
 use pyo3::types::{PyAnyMethods, PyModuleMethods};
 use stdio::TryCloneAsFile;
 use tokio::process;
 use workunit_store::{Level, in_workunit};
 
-use crate::context::Context;
-use crate::externs::{self, PyGeneratorResponseNativeCall};
+use crate::externs;
 use crate::nodes::{ExecuteProcess, NodeResult, task_get_context};
 use crate::python::{Failure, Value};
 
 pub fn register(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(interactive_process, m)?)?;
+    m.add_function(wrap_pyfunction!(py_bindings::interactive_process, m)?)?;
     Ok(())
 }
 
-#[pyfunction]
-fn interactive_process(
-    interactive_process: Value,
-    process_config: Value,
-) -> PyGeneratorResponseNativeCall {
-    PyGeneratorResponseNativeCall::new(in_workunit!(
-        "interactive_process",
-        Level::Debug,
-        |_workunit| async move {
-            let context = task_get_context();
-            interactive_process_inner(&context, interactive_process, process_config).await
-        }
-    ))
-}
-
-pub async fn interactive_process_inner(
-    context: &Context,
+pub async fn interactive_process(
     interactive_process: Value,
     process_config: Value,
 ) -> NodeResult<Value> {
+    in_workunit!(
+        "interactive_process",
+        Level::Debug,
+        |_workunit| async move { interactive_process_inner(interactive_process, process_config).await }
+    )
+    .await
+}
+
+pub async fn interactive_process_inner(
+    interactive_process: Value,
+    process_config: Value,
+) -> NodeResult<Value> {
+    let context = task_get_context();
     let types = &context.core.types;
     let interactive_process_result = types.interactive_process_result;
 
@@ -235,4 +231,24 @@ pub async fn interactive_process_inner(
             &[externs::store_i64(py, i64::from(code))],
         )
     }))
+}
+
+mod py_bindings {
+    use pyo3::pyfunction;
+
+    use crate::externs::PyGeneratorResponseNativeCall;
+    use crate::intrinsics::native_rule::native_call2;
+    use crate::python::Value;
+
+    #[pyfunction]
+    pub fn interactive_process(
+        interactive_process: Value,
+        process_config: Value,
+    ) -> PyGeneratorResponseNativeCall {
+        native_call2(
+            interactive_process,
+            process_config,
+            super::interactive_process,
+        )
+    }
 }
