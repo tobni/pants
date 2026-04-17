@@ -319,6 +319,19 @@ class Address:
     def __lt__(self, other: Any) -> bool: ...
     def __gt__(self, other: Any) -> bool: ...
 
+@final
+class WrappedTargetRequest:
+    """Used with `WrappedTarget` to get the Target corresponding to an address.
+
+    `description_of_origin` is used for error messages when the address does not actually exist. If
+    you are confident this cannot happen, set the string to something like `<infallible>`.
+    """
+
+    address: Address
+    description_of_origin: str
+
+    def __init__(self, address: Address, description_of_origin: str) -> None: ...
+
 # ------------------------------------------------------------------------------
 # Union
 # ------------------------------------------------------------------------------
