@@ -170,7 +170,7 @@ impl Snapshot {
                 .expand_globs(path_globs, SymlinkBehavior::Oblivious, None)
                 .await
                 .map_err(|err| format!("Error expanding globs: {err}"))?;
-            Snapshot::from_path_stats(OneOffStoreFileByDigest::new(store, fs, true), path_stats)
+            Snapshot::from_path_stats(OneOffStoreFileByDigest::new(store, fs), path_stats)
                 .await
         }
     }
@@ -247,16 +247,11 @@ pub trait StoreFileByDigest<Error> {
 pub struct OneOffStoreFileByDigest {
     store: Store,
     fs: Arc<FS>,
-    immutable: bool,
 }
 
 impl OneOffStoreFileByDigest {
-    pub fn new(store: Store, fs: Arc<FS>, immutable: bool) -> OneOffStoreFileByDigest {
-        OneOffStoreFileByDigest {
-            store,
-            fs,
-            immutable,
-        }
+    pub fn new(store: Store, fs: Arc<FS>) -> OneOffStoreFileByDigest {
+        OneOffStoreFileByDigest { store, fs }
     }
 }
 
@@ -264,10 +259,9 @@ impl StoreFileByDigest<String> for OneOffStoreFileByDigest {
     fn store_by_digest(&self, file: File) -> future::BoxFuture<'static, Result<Digest, String>> {
         let store = self.store.clone();
         let fs = self.fs.clone();
-        let immutable = self.immutable;
         let res = async move {
             let path = fs.file_path(&file);
-            store.store_file(true, immutable, path).await
+            store.store_file(path).await
         };
         res.boxed()
     }

@@ -32,7 +32,7 @@ pub fn setup() -> (Store, tempfile::TempDir, Arc<FS>, OneOffStoreFileByDigest) {
     let dir = tempfile::Builder::new().prefix("root").tempdir().unwrap();
     let ignorer = GitignoreStyleExcludes::create(vec![]).unwrap();
     let fs = Arc::new(FS::new(dir.path(), ignorer, executor).unwrap());
-    let file_saver = OneOffStoreFileByDigest::new(store.clone(), fs.clone(), true);
+    let file_saver = OneOffStoreFileByDigest::new(store.clone(), fs.clone());
     (store, dir, fs, file_saver)
 }
 

@@ -76,15 +76,10 @@ pub fn criterion_benchmark_snapshot_capture(c: &mut Criterion) {
 
     let mut cgroup = c.benchmark_group("snapshot_capture");
 
-    // The number of files, file size, whether the inputs should be assumed to be immutable, and the
-    // number of times to capture (only the first capture actually stores anything: the rest should
-    // ignore the duplicated data.)
-    for params in [
-        (100, 100, false, 100),
-        (20, 10_000_000, true, 10),
-        (1, 200_000_000, true, 10),
-    ] {
-        let (count, size, immutable, captures) = params;
+    // The number of files, file size, and the number of times to capture (only the first capture
+    // actually stores anything: the rest should ignore the duplicated data.)
+    for params in [(100, 100, 100), (20, 10_000_000, 10), (1, 200_000_000, 10)] {
+        let (count, size, captures) = params;
         let storedir = TempDir::new().unwrap();
         let store = Store::local_only(executor.clone(), storedir.path()).unwrap();
         let (tempdir, path_stats) = tempdir_containing(count, size);
@@ -104,7 +99,7 @@ pub fn criterion_benchmark_snapshot_capture(c: &mut Criterion) {
                     for _ in 0..captures {
                         let _ = executor
                             .block_on(Snapshot::from_path_stats(
-                                OneOffStoreFileByDigest::new(store.clone(), fs.clone(), immutable),
+                                OneOffStoreFileByDigest::new(store.clone(), fs.clone()),
                                 path_stats.clone(),
                             ))
                             .unwrap();
@@ -342,7 +337,7 @@ fn snapshot(
             )
             .unwrap();
             Snapshot::from_path_stats(
-                OneOffStoreFileByDigest::new(store2, Arc::new(fs), true),
+                OneOffStoreFileByDigest::new(store2, Arc::new(fs)),
                 path_stats,
             )
             .await
