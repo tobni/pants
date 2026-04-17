@@ -15,17 +15,16 @@ use pyo3::types::{PyAnyMethods, PyModuleMethods, PyTuple, PyTypeMethods};
 use pyo3::{Bound, IntoPyObject, PyAny};
 use store::{SnapshotOps, SubsetParams};
 
+use crate::Failure;
 use crate::externs;
 use crate::externs::fs::{
-    PyAddPrefix, PyFileDigest, PyMergeDigests, PyPathGlobs, PyPathMetadata, PyPathNamespace,
-    PyRemovePrefix,
+    PyAddPrefix, PyFileDigest, PyMergeDigests, PyPathMetadata, PyPathNamespace, PyRemovePrefix,
 };
 use crate::nodes::{
     DownloadedFile, NodeResult, PathMetadataNode, Snapshot, SubjectPath, lift_directory_digest,
     task_get_context, unmatched_globs_additional_context,
 };
 use crate::python::{Key, Value, throw};
-use crate::{Context, Failure};
 
 pub fn register(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_bindings::add_prefix, m)?)?;
@@ -44,19 +43,14 @@ pub fn register(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-pub async fn get_digest_contents(digest: Value) -> NodeResult<Value> {
+pub async fn get_digest_contents(digest: DirectoryDigest) -> NodeResult<Vec<fs::FileContent>> {
     let context = task_get_context();
-
-    let digest = Python::attach(|py| {
-        let py_digest = digest.bind(py);
-        lift_directory_digest(py_digest)
-    })?;
-
-    let digest_contents = context.core.store().contents_for_directory(digest).await?;
-
-    Ok(Python::attach(|py| {
-        Snapshot::store_digest_contents(py, &context, &digest_contents)
-    })?)
+    context
+        .core
+        .store()
+        .contents_for_directory(digest)
+        .await
+        .map_err(Failure::from)
 }
 
 pub async fn get_digest_entries(digest: Value) -> NodeResult<Value> {
@@ -152,19 +146,8 @@ pub async fn download_file(download_file: Value) -> NodeResult<Value> {
     })?)
 }
 
-pub async fn path_globs_to_digest(path_globs: Value<PyPathGlobs>) -> NodeResult<Value> {
+pub async fn path_globs_to_digest(globs: PathGlobs) -> NodeResult<DirectoryDigest> {
     let context = task_get_context();
-    let digest = inner_path_globs_to_digest(path_globs, &context).await?;
-    Ok(Python::attach(|py| {
-        Snapshot::store_directory_digest(py, digest)
-    })?)
-}
-
-async fn inner_path_globs_to_digest(
-    path_globs: Value<PyPathGlobs>,
-    context: &Context,
-) -> Result<DirectoryDigest, Failure> {
-    let globs: PathGlobs = PathGlobs::clone(&path_globs);
     Ok(context.get(Snapshot::from_path_globs(globs)).await?.into())
 }
 
@@ -385,12 +368,14 @@ pub async fn path_metadata_request(single_path: Value) -> NodeResult<Value> {
 }
 
 mod py_bindings {
-    use pyo3::pyfunction;
+    use fs::PathGlobs;
+    use pyo3::{Python, pyfunction};
 
     use crate::externs::PyGeneratorResponseNativeCall;
-    use crate::externs::fs::PyPathGlobs;
+    use crate::externs::fs::{PyDigest, PyPathGlobs};
     use crate::intrinsics::native_rule::native_call;
-    use crate::python::Value;
+    use crate::nodes::{Snapshot, task_get_context};
+    use crate::python::{Failure, Value};
 
     #[pyfunction]
     pub fn add_prefix(add_prefix: Value) -> PyGeneratorResponseNativeCall {
@@ -413,8 +398,15 @@ mod py_bindings {
     }
 
     #[pyfunction]
-    pub fn get_digest_contents(digest: Value) -> PyGeneratorResponseNativeCall {
-        native_call(digest, super::get_digest_contents)
+    pub fn get_digest_contents(digest: Value<PyDigest>) -> PyGeneratorResponseNativeCall {
+        native_call(digest, |py_digest| async move {
+            let digest = py_digest.get().0.clone();
+            let contents = super::get_digest_contents(digest).await?;
+            let context = task_get_context();
+            Python::attach(|py| {
+                Snapshot::store_digest_contents(py, &context, &contents).map_err(Failure::from)
+            })
+        })
     }
 
     #[pyfunction]
@@ -434,7 +426,11 @@ mod py_bindings {
 
     #[pyfunction]
     pub fn path_globs_to_digest(path_globs: Value<PyPathGlobs>) -> PyGeneratorResponseNativeCall {
-        native_call(path_globs, super::path_globs_to_digest)
+        native_call(path_globs, |py_globs| async move {
+            let globs = PathGlobs::clone(&py_globs);
+            let digest = super::path_globs_to_digest(globs).await?;
+            Python::attach(|py| Snapshot::store_directory_digest(py, digest)).map_err(Failure::from)
+        })
     }
 
     #[pyfunction]
