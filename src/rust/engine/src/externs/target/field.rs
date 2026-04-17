@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 use std::fmt::Write;
+use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
 use fnv::FnvHashMap;
@@ -752,5 +753,54 @@ impl AsyncFieldMixin {
             CompareOp::Ne => Some(!is_eq),
             _ => None,
         }))
+    }
+}
+
+/// Used with `WrappedTarget` to get the Target corresponding to an address.
+///
+/// `description_of_origin` is used for error messages when the address does not actually exist. If
+/// you are confident this cannot happen, set the string to something like `<infallible>`.
+#[pyclass(frozen, eq, hash, module = "pants.engine.internals.native_engine")]
+pub struct WrappedTargetRequest {
+    #[pyo3(get)]
+    address: Py<Address>,
+    description_of_origin: PyBackedStr,
+}
+
+impl PartialEq for WrappedTargetRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.address.get() == other.address.get()
+    }
+}
+
+impl Eq for WrappedTargetRequest {}
+
+impl Hash for WrappedTargetRequest {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.address.get().hash(state);
+    }
+}
+
+#[pymethods]
+impl WrappedTargetRequest {
+    #[new]
+    fn __new__(address: Py<Address>, description_of_origin: PyBackedStr) -> Self {
+        Self {
+            address,
+            description_of_origin,
+        }
+    }
+
+    #[getter]
+    fn description_of_origin(&self) -> &PyBackedStr {
+        &self.description_of_origin
+    }
+
+    fn __repr__(&self) -> String {
+        let address = self.address.get();
+        let origin: &str = &self.description_of_origin;
+        format!(
+            "WrappedTargetRequest(address=Address({address}), description_of_origin={origin:?})"
+        )
     }
 }

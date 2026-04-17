@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 pub use adaptor::{SourceBlock, TargetAdaptor};
 pub use field::{
     AsyncFieldMixin, BoolField, Field, ScalarField, SequenceField, StringField,
-    StringSequenceField, TriBoolField,
+    StringSequenceField, TriBoolField, WrappedTargetRequest,
 };
 pub use source_fields::{
     MultipleSourcesField, OptionalSingleSourceField, SingleSourceField, SourcesField,
@@ -37,6 +37,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OptionalSingleSourceField>()?;
     m.add_class::<SingleSourceField>()?;
     m.add_class::<NoFieldValue>()?;
+    m.add_class::<WrappedTargetRequest>()?;
 
     NoFieldValue::init_singleton(m.py());
     m.add("NO_VALUE", NoFieldValue::expect_singleton())?;
