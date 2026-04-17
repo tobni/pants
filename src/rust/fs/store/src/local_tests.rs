@@ -5,7 +5,10 @@ use crate::{EntryType, LocalOptions, ShrinkBehavior};
 
 use std::collections::HashSet;
 use std::io::Write;
+use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -26,7 +29,7 @@ async fn assert_store_bytes(
     file.flush().unwrap();
 
     let digest = store
-        .store(entry_type, false, true, file.path().to_owned())
+        .store(entry_type, file.path().to_owned())
         .await
         .unwrap();
 
@@ -785,6 +788,76 @@ pub async fn load_bytes(
     store
         .load_bytes_with(entry_type, digest, Bytes::copy_from_slice)
         .await
+}
+
+/// Confirms `ByteStore::store` bounds its torn-read retries, for a file size that routes
+/// through the in-memory (LMDB) path.
+#[tokio::test]
+async fn store_errors_on_unstable_small_source() {
+    run_unstable_source_test(64 * 1024).await;
+}
+
+/// Confirms `ByteStore::store` bounds its torn-read retries, for a file size that routes
+/// through the streaming (FSDB) path. Exercises `try_stream_large`'s verify-then-publish
+/// logic under races.
+#[tokio::test]
+async fn store_errors_on_unstable_large_source() {
+    run_unstable_source_test(2 * 1024 * 1024).await;
+}
+
+async fn run_unstable_source_test(len: usize) {
+    let dir = TempDir::new().unwrap();
+    let store = new_store(dir.path());
+
+    let file = NamedTempFile::new().unwrap();
+    let src = file.path().to_owned();
+    std::fs::write(&src, vec![0u8; len]).unwrap();
+
+    // Positionally rewrite the whole file with varying bytes. A store attempt whose primary
+    // read and verify pass straddle a rewrite sees differing digests and classifies as torn.
+    let racer_path = src.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    let iterations = Arc::new(AtomicU64::new(0));
+    let iterations_clone = iterations.clone();
+    let racer = std::thread::spawn(move || {
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&racer_path)
+            .unwrap();
+        let mut tick: u8 = 0;
+        while !stop_clone.load(Ordering::Relaxed) {
+            tick = tick.wrapping_add(1);
+            if writer.write_all_at(&vec![tick; len], 0).is_ok() {
+                iterations_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    });
+
+    let racing = tokio::time::timeout(
+        Duration::from_secs(10),
+        store.store(EntryType::File, src.clone()),
+    )
+    .await;
+    stop.store(true, Ordering::Relaxed);
+    racer.join().unwrap();
+
+    // The racer has to have run at least once, otherwise the test didn't exercise anything.
+    let ran = iterations.load(Ordering::Relaxed);
+    assert!(ran > 0, "racer did not execute any rewrites");
+
+    // Detection is best-effort: racer interleaving with read windows depends on scheduling.
+    // If it fires, we must see the 'kept changing' error and no other error. If it doesn't,
+    // `store` returned Ok on a coincidentally-coherent read, which is also acceptable.
+    if let Err(e) = racing.expect("`store` hung under a mutating racer") {
+        assert!(
+            e.contains("kept changing"),
+            "expected 'kept changing' error, got: {e}"
+        );
+    }
+
+    // After the racer stops, store must succeed.
+    store.store(EntryType::File, src).await.unwrap();
 }
 
 async fn prime_store_with_file_bytes(store: &ByteStore, bytes: Bytes) -> Digest {

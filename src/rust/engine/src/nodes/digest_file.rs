@@ -25,7 +25,7 @@ impl DigestFile {
         context
             .core
             .store()
-            .store_file(true, false, path)
+            .store_file(path)
             .map_err(throw)
             .await
     }

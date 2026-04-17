@@ -478,14 +478,11 @@ async fn execute(top_match: &clap::ArgMatches) -> Result<(), ExitError> {
                         })?;
                     match file {
                         fs::Stat::File(f) => {
-                            let digest = store::OneOffStoreFileByDigest::new(
-                                store.clone(),
-                                Arc::new(fs),
-                                false,
-                            )
-                            .store_by_digest(f)
-                            .await
-                            .unwrap();
+                            let digest =
+                                store::OneOffStoreFileByDigest::new(store.clone(), Arc::new(fs))
+                                    .store_by_digest(f)
+                                    .await
+                                    .unwrap();
 
                             let report =
                                 ensure_uploaded_to_remote(&store, store_has_remote, digest)
@@ -581,7 +578,7 @@ async fn execute(top_match: &clap::ArgMatches) -> Result<(), ExitError> {
                     .map_err(|e| format!("Error expanding globs: {e:?}"))?;
 
                 let snapshot = Snapshot::from_path_stats(
-                    store::OneOffStoreFileByDigest::new(store_copy, fs, false),
+                    store::OneOffStoreFileByDigest::new(store_copy, fs),
                     paths,
                 )
                 .await?;

@@ -131,7 +131,7 @@ impl CommandRunner {
             .expand_globs(output_globs, SymlinkBehavior::Aware, None)
             .map_err(|err| format!("Error expanding output globs: {err}"))
             .await?;
-        Snapshot::from_path_stats(OneOffStoreFileByDigest::new(store, fs, true), path_stats).await
+        Snapshot::from_path_stats(OneOffStoreFileByDigest::new(store, fs), path_stats).await
     }
 
     pub fn named_caches(&self) -> &NamedCaches {
