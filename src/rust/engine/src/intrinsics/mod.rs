@@ -4,6 +4,9 @@
 use pyo3::types::PyModule;
 use pyo3::{Bound, PyResult, Python};
 
+// Shared harness for native rules.
+pub mod native_rule;
+
 // Sub-modules with intrinsic implementations.
 mod dep_inference;
 mod digests;
