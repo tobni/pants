@@ -56,6 +56,9 @@ from pants.engine.internals.native_engine import SequenceField as SequenceField 
 from pants.engine.internals.native_engine import StringField as StringField
 from pants.engine.internals.native_engine import StringSequenceField as StringSequenceField
 from pants.engine.internals.native_engine import TriBoolField as TriBoolField  # noqa: F401
+from pants.engine.internals.native_engine import (  # noqa: F401
+    WrappedTargetRequest as WrappedTargetRequest,
+)
 from pants.engine.internals.target_adaptor import SourceBlock, SourceBlocks  # noqa: F401
 from pants.engine.rules import rule
 from pants.engine.unions import UnionMembership, UnionRule, distinct_union_type_per_subclass, union
@@ -586,18 +589,6 @@ def _validate_origin_sources_blocks(origin_sources_blocks: FrozenDict[str, Sourc
                 raise ValueError(
                     f"Expected `origin_sources_blocks` to be a `FrozenDict` with values of type `SourceBlocks`, got values of {type(blocks)=} {blocks=}"
                 )
-
-
-@dataclass(frozen=True)
-class WrappedTargetRequest:
-    """Used with `WrappedTarget` to get the Target corresponding to an address.
-
-    `description_of_origin` is used for error messages when the address does not actually exist. If
-    you are confident this cannot happen, set the string to something like `<infallible>`.
-    """
-
-    address: Address
-    description_of_origin: str = dataclasses.field(hash=False, compare=False)
 
 
 @dataclass(frozen=True)

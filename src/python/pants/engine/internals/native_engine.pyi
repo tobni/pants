@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from io import RawIOBase
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Protocol, Self, TextIO, TypeVar, overload
+from typing import Any, ClassVar, Generic, Protocol, Self, TextIO, TypeVar, final, overload
 
 from pants.engine.fs import (
     CreateDigest,
@@ -294,6 +294,19 @@ class Address:
     # the stub in order for mypy to accept them as comparable.
     def __lt__(self, other: Any) -> bool: ...
     def __gt__(self, other: Any) -> bool: ...
+
+@final
+class WrappedTargetRequest:
+    """Used with `WrappedTarget` to get the Target corresponding to an address.
+
+    `description_of_origin` is used for error messages when the address does not actually exist. If
+    you are confident this cannot happen, set the string to something like `<infallible>`.
+    """
+
+    address: Address
+    description_of_origin: str
+
+    def __init__(self, address: Address, description_of_origin: str) -> None: ...
 
 # ------------------------------------------------------------------------------
 # Union
