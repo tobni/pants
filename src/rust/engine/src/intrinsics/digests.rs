@@ -17,7 +17,8 @@ use store::{SnapshotOps, SubsetParams};
 
 use crate::externs;
 use crate::externs::fs::{
-    PyAddPrefix, PyFileDigest, PyMergeDigests, PyPathMetadata, PyPathNamespace, PyRemovePrefix,
+    PyAddPrefix, PyFileDigest, PyMergeDigests, PyPathGlobs, PyPathMetadata, PyPathNamespace,
+    PyRemovePrefix,
 };
 use crate::nodes::{
     DownloadedFile, NodeResult, PathMetadataNode, Snapshot, SubjectPath, lift_directory_digest,
@@ -151,7 +152,7 @@ pub async fn download_file(download_file: Value) -> NodeResult<Value> {
     })?)
 }
 
-pub async fn path_globs_to_digest(path_globs: Value) -> NodeResult<Value> {
+pub async fn path_globs_to_digest(path_globs: Value<PyPathGlobs>) -> NodeResult<Value> {
     let context = task_get_context();
     let digest = inner_path_globs_to_digest(path_globs, &context).await?;
     Ok(Python::attach(|py| {
@@ -160,14 +161,11 @@ pub async fn path_globs_to_digest(path_globs: Value) -> NodeResult<Value> {
 }
 
 async fn inner_path_globs_to_digest(
-    path_globs: Value,
+    path_globs: Value<PyPathGlobs>,
     context: &Context,
 ) -> Result<DirectoryDigest, Failure> {
-    let path_globs = lift_python_path_globs(path_globs)?;
-    Ok(context
-        .get(Snapshot::from_path_globs(path_globs))
-        .await?
-        .into())
+    let globs: PathGlobs = PathGlobs::clone(&path_globs);
+    Ok(context.get(Snapshot::from_path_globs(globs)).await?.into())
 }
 
 fn lift_python_path_globs(path_globs: Value) -> Result<PathGlobs, Failure> {
@@ -390,6 +388,7 @@ mod py_bindings {
     use pyo3::pyfunction;
 
     use crate::externs::PyGeneratorResponseNativeCall;
+    use crate::externs::fs::PyPathGlobs;
     use crate::intrinsics::native_rule::native_call;
     use crate::python::Value;
 
@@ -434,7 +433,7 @@ mod py_bindings {
     }
 
     #[pyfunction]
-    pub fn path_globs_to_digest(path_globs: Value) -> PyGeneratorResponseNativeCall {
+    pub fn path_globs_to_digest(path_globs: Value<PyPathGlobs>) -> PyGeneratorResponseNativeCall {
         native_call(path_globs, super::path_globs_to_digest)
     }
 

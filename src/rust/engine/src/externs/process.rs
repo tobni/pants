@@ -17,7 +17,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[pyclass(name = "ProcessExecutionEnvironment", from_py_object)]
+#[pyclass(name = "ProcessExecutionEnvironment", frozen, from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PyProcessExecutionEnvironment {
     pub environment: ProcessExecutionEnvironment,

@@ -295,15 +295,50 @@ impl Key {
     }
 }
 
-// NB: Although `Py<PyAny>` (aka `Py<PyAny>`) directly implements `Clone`, it's ~4% faster to wrap
-// in `Arc` like this, because `Py<T>` internally acquires a (non-GIL) global lock during `Clone`
-// and `Drop`.
-#[derive(Clone)]
-pub struct Value(Arc<Py<PyAny>>);
+// NB: Although `Py<T>` directly implements `Clone`, it's ~4% faster to wrap in `Arc` like
+// this, because `Py<T>` internally acquires a (non-GIL) global lock during `Clone` and
+// `Drop`. Typed variants (`Value<PyPathGlobs>` etc.) inherit the same optimization.
+pub struct Value<T = PyAny>(Arc<Py<T>>);
 
-// NB: The size of objects held by a Graph is tracked independently, so we assert that each Value
-// is only as large as its pointer.
+// Derive of Clone requires T: Clone; write the impl by hand so Arc alone drives it.
+impl<T> Clone for Value<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+// NB: The size of Values held by a Graph is tracked independently, so we assert that each
+// Value is only as large as its pointer. The assertion applies to `Value` (i.e. `Value<PyAny>`);
+// typed `Value<T>` variants are not held by the Graph.
 known_deep_size!(8; Value);
+
+impl<T> Value<T> {
+    pub fn new_typed(obj: Py<T>) -> Self {
+        Value(Arc::new(obj))
+    }
+
+    /// Bind this value to the given Python GIL context as a `pyo3::Bound` smart pointer.
+    pub fn bind<'py>(&self, py: Python<'py>) -> &Bound<'py, T> {
+        self.0.bind(py)
+    }
+}
+
+impl<T: pyo3::PyClass<Frozen = pyo3::pyclass::boolean_struct::True> + Sync> Value<T> {
+    /// Borrow the inner Rust data of a frozen pyclass without acquiring the GIL.
+    pub fn get(&self) -> &T {
+        self.0.get()
+    }
+}
+
+impl<T: pyo3::PyClass<Frozen = pyo3::pyclass::boolean_struct::True> + Sync> std::ops::Deref
+    for Value<T>
+{
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.get()
+    }
+}
 
 impl Value {
     pub fn new(obj: Py<PyAny>) -> Value {
@@ -316,11 +351,6 @@ impl Value {
             Ok(obj) => obj,
             Err(arc_handle) => arc_handle.clone_ref(py),
         }
-    }
-
-    /// Bind this value to the given Python GIL context as a `pyo3::Bound` smart pointer.
-    pub fn bind<'py>(&self, py: Python<'py>) -> &Bound<'py, PyAny> {
-        self.0.bind(py)
     }
 }
 
@@ -354,11 +384,15 @@ impl fmt::Display for Value {
     }
 }
 
-impl<'a, 'py> FromPyObject<'a, 'py> for Value {
+impl<'a, 'py, T> FromPyObject<'a, 'py> for Value<T>
+where
+    T: pyo3::PyTypeCheck,
+{
     type Error = PyErr;
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        Ok(Value::new(obj.to_owned().unbind()))
+        let py_t: Py<T> = obj.extract()?;
+        Ok(Value::new_typed(py_t))
     }
 }
 

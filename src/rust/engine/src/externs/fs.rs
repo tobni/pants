@@ -61,7 +61,7 @@ pub fn possible_store_missing_digest(e: store::StoreError) -> PyErr {
     failure.into()
 }
 
-#[pyclass(name = "Digest", from_py_object)]
+#[pyclass(name = "Digest", frozen, from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PyDigest(pub DirectoryDigest);
 
@@ -119,7 +119,7 @@ impl PyDigest {
     }
 }
 
-#[pyclass(name = "FileDigest", from_py_object)]
+#[pyclass(name = "FileDigest", frozen, from_py_object)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyFileDigest(pub Digest);
 
@@ -164,7 +164,7 @@ impl PyFileDigest {
     }
 }
 
-#[pyclass(name = "Snapshot")]
+#[pyclass(name = "Snapshot", frozen)]
 pub struct PySnapshot(pub Snapshot);
 
 #[pymethods]
@@ -272,7 +272,7 @@ impl PySnapshot {
     }
 }
 
-#[pyclass(name = "MergeDigests")]
+#[pyclass(name = "MergeDigests", frozen)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct PyMergeDigests(pub Vec<DirectoryDigest>);
 
@@ -314,7 +314,7 @@ impl PyMergeDigests {
     }
 }
 
-#[pyclass(name = "AddPrefix")]
+#[pyclass(name = "AddPrefix", frozen)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct PyAddPrefix {
     pub digest: DirectoryDigest,
@@ -356,7 +356,7 @@ impl PyAddPrefix {
     }
 }
 
-#[pyclass(name = "RemovePrefix")]
+#[pyclass(name = "RemovePrefix", frozen)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct PyRemovePrefix {
     pub digest: DirectoryDigest,
@@ -700,7 +700,7 @@ impl PyFilespec {
 // FilespecMatcher
 // -----------------------------------------------------------------------------
 
-#[pyclass(name = "FilespecMatcher")]
+#[pyclass(name = "FilespecMatcher", frozen)]
 #[derive(Debug)]
 pub struct PyFilespecMatcher(FilespecMatcher);
 
@@ -774,6 +774,7 @@ impl PyFilespecMatcher {
 #[pyclass(
     name = "PathMetadataKind",
     rename_all = "UPPERCASE",
+    frozen,
     eq,
     from_py_object
 )]
@@ -805,7 +806,7 @@ impl From<PyPathMetadataKind> for fs::PathMetadataKind {
 }
 
 /// Expanded version of `Stat` when access to additional filesystem attributes is necessary.
-#[pyclass(name = "PathMetadata", from_py_object)]
+#[pyclass(name = "PathMetadata", frozen, from_py_object)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PyPathMetadata(pub fs::PathMetadata);
 
