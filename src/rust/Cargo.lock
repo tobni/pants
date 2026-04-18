@@ -1142,6 +1142,7 @@ dependencies = [
  "maplit",
  "mock",
  "nailgun",
+ "native_rule_macro",
  "num_enum",
  "options",
  "options_pants_ng",
@@ -2543,6 +2544,15 @@ dependencies = [
  "log",
  "tokio",
  "tokio-util 0.6.10",
+]
+
+[[package]]
+name = "native_rule_macro"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

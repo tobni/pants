@@ -30,12 +30,10 @@ pub fn register(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_bindings::add_prefix, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::create_digest, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::digest_subset_to_digest, m)?)?;
-    m.add_function(wrap_pyfunction!(py_bindings::digest_to_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::get_digest_contents, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::get_digest_entries, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::download_file, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::merge_digests, m)?)?;
-    m.add_function(wrap_pyfunction!(py_bindings::path_globs_to_digest, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::path_globs_to_paths, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::remove_prefix, m)?)?;
     m.add_function(wrap_pyfunction!(py_bindings::path_metadata_request, m)?)?;
@@ -105,18 +103,6 @@ pub async fn add_prefix(add_prefix: Value) -> NodeResult<Value> {
     })?)
 }
 
-pub async fn digest_to_snapshot(digest: Value) -> NodeResult<Value> {
-    let context = task_get_context();
-    let store = context.core.store();
-
-    let digest = Python::attach(|py| {
-        let py_digest = digest.bind(py);
-        lift_directory_digest(py_digest)
-    })?;
-    let snapshot = store::Snapshot::from_digest(store, digest).await?;
-    Ok(Python::attach(|py| Snapshot::store_snapshot(py, snapshot))?)
-}
-
 pub async fn merge_digests(digests: Value) -> NodeResult<Value> {
     let context = task_get_context();
 
@@ -144,11 +130,6 @@ pub async fn download_file(download_file: Value) -> NodeResult<Value> {
     Ok(Python::attach(|py| {
         Snapshot::store_directory_digest(py, snapshot.into())
     })?)
-}
-
-pub async fn path_globs_to_digest(globs: PathGlobs) -> NodeResult<DirectoryDigest> {
-    let context = task_get_context();
-    Ok(context.get(Snapshot::from_path_globs(globs)).await?.into())
 }
 
 fn lift_python_path_globs(path_globs: Value) -> Result<PathGlobs, Failure> {
@@ -368,11 +349,10 @@ pub async fn path_metadata_request(single_path: Value) -> NodeResult<Value> {
 }
 
 mod py_bindings {
-    use fs::PathGlobs;
     use pyo3::{Python, pyfunction};
 
     use crate::externs::PyGeneratorResponseNativeCall;
-    use crate::externs::fs::{PyDigest, PyPathGlobs};
+    use crate::externs::fs::PyDigest;
     use crate::intrinsics::native_rule::native_call;
     use crate::nodes::{Snapshot, task_get_context};
     use crate::python::{Failure, Value};
@@ -390,11 +370,6 @@ mod py_bindings {
     #[pyfunction]
     pub fn digest_subset_to_digest(digest_subset: Value) -> PyGeneratorResponseNativeCall {
         native_call(digest_subset, super::digest_subset_to_digest)
-    }
-
-    #[pyfunction]
-    pub fn digest_to_snapshot(digest: Value) -> PyGeneratorResponseNativeCall {
-        native_call(digest, super::digest_to_snapshot)
     }
 
     #[pyfunction]
@@ -422,15 +397,6 @@ mod py_bindings {
     #[pyfunction]
     pub fn merge_digests(digests: Value) -> PyGeneratorResponseNativeCall {
         native_call(digests, super::merge_digests)
-    }
-
-    #[pyfunction]
-    pub fn path_globs_to_digest(path_globs: Value<PyPathGlobs>) -> PyGeneratorResponseNativeCall {
-        native_call(path_globs, |py_globs| async move {
-            let globs = PathGlobs::clone(&py_globs);
-            let digest = super::path_globs_to_digest(globs).await?;
-            Python::attach(|py| Snapshot::store_directory_digest(py, digest)).map_err(Failure::from)
-        })
     }
 
     #[pyfunction]

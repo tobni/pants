@@ -703,10 +703,12 @@ pub struct RuleCallTrampoline {
     rule: Py<PyAny>,
 }
 
-#[pymethods]
 impl RuleCallTrampoline {
-    #[new]
-    fn __new__(
+    /// Construct a trampoline directly from Rust. Used at `native_engine` module-init time to
+    /// expose a Python-callable surface for Rust-native rules. `wrapped` and `rule` are only
+    /// used for introspection (`__name__`, `__line_number__`, ...) — for a native rule,
+    /// `py.None()` is an acceptable stand-in.
+    pub fn new(
         rule_id: PyBackedStr,
         output_type: Py<PyType>,
         wrapped: Py<PyAny>,
@@ -718,6 +720,19 @@ impl RuleCallTrampoline {
             wrapped,
             rule,
         }
+    }
+}
+
+#[pymethods]
+impl RuleCallTrampoline {
+    #[new]
+    fn __new__(
+        rule_id: PyBackedStr,
+        output_type: Py<PyType>,
+        wrapped: Py<PyAny>,
+        rule: Py<PyAny>,
+    ) -> Self {
+        Self::new(rule_id, output_type, wrapped, rule)
     }
 
     #[getter]

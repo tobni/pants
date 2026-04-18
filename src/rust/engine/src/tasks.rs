@@ -18,7 +18,11 @@ impl DisplayForGraph for Rule {
     fn fmt_for_graph(&self, display_args: DisplayForGraphArgs) -> String {
         let task = &self.0;
 
-        let task_name = task.func.full_name();
+        let task_name = task
+            .func
+            .as_ref()
+            .map(Function::full_name)
+            .unwrap_or_else(|| task.id.as_str().to_owned());
         let product = format!("{}", task.product);
 
         let clause_portion = Self::formatted_positional_arguments(
@@ -132,7 +136,9 @@ pub struct Task {
     pub args: Vec<(String, DependencyKey<TypeId>)>,
     pub gets: Vec<DependencyKey<TypeId>>,
     pub masked_types: Vec<TypeId>,
-    pub func: Function,
+    /// Python callable backing this task. `None` for Rust-native rules, whose implementation
+    /// is looked up by `id` in `native_rules::lookup` at dispatch time.
+    pub func: Option<Function>,
     pub cacheable: bool,
     pub display_info: DisplayInfo,
 }
@@ -225,7 +231,46 @@ impl Tasks {
             args,
             gets: Vec::new(),
             masked_types,
-            func,
+            func: Some(func),
+            display_info: DisplayInfo { name, desc, level },
+        });
+    }
+
+    /// Register a Rust-native rule. The implementation is looked up at dispatch time by
+    /// `id` in `native_rules::lookup`; this method only installs the rule's graph entry.
+    /// Unlike `task_begin`/`task_end`, native rules have no Python function and declare no
+    /// explicit positional args — their body fetches all dependencies through the task
+    /// context (`ctx.get(...)`), mirroring how `@rule` bodies consume deps via `await`s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn task_begin_native(
+        &mut self,
+        rule_id: RuleId,
+        product: TypeId,
+        arg_types: Vec<(String, TypeId)>,
+        masked_types: Vec<TypeId>,
+        name: String,
+        desc: Option<String>,
+        level: Level,
+    ) {
+        assert!(
+            self.preparing.is_none(),
+            "Must `end()` the previous task creation before beginning a new one!"
+        );
+        let args = arg_types
+            .into_iter()
+            .map(|(name, typ)| (name, DependencyKey::new(typ)))
+            .collect();
+
+        self.preparing = Some(Task {
+            id: rule_id,
+            cacheable: true,
+            product,
+            side_effecting: false,
+            engine_aware_return_type: false,
+            args,
+            gets: Vec::new(),
+            masked_types,
+            func: None,
             display_info: DisplayInfo { name, desc, level },
         });
     }

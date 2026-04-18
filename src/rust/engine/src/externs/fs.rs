@@ -445,6 +445,10 @@ impl PyPathGlobs {
         globs.sort();
         Self(PathGlobs::new(globs, strict_match_behavior, conjunction))
     }
+
+    pub(crate) fn from_path_globs(globs: PathGlobs) -> Self {
+        Self(globs)
+    }
 }
 
 /// Extract the string value from a Python enum (has `.value` attr) or a plain string.

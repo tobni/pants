@@ -9,7 +9,6 @@ from pants.backend.python.util_rules import ancestor_files
 from pants.backend.python.util_rules.ancestor_files import (
     AncestorFiles,
     AncestorFilesRequest,
-    putative_ancestor_files,
 )
 from pants.testutil.rule_runner import QueryRule, RuleRunner
 
@@ -68,40 +67,3 @@ def test_rule(rule_runner: RuleRunner, ignore_empty_files: bool) -> None:
     )
 
 
-def test_identify_missing_ancestor_files() -> None:
-    assert {
-        "__init__.py",
-        "a/__init__.py",
-        "a/b/__init__.py",
-        "a/b/c/d/__init__.py",
-    } == putative_ancestor_files(
-        requested=("__init__.py",),
-        input_files=("a/b/foo.py", "a/b/c/__init__.py", "a/b/c/d/bar.py", "a/e/__init__.py"),
-    )
-
-    assert {
-        "__init__.py",
-        "src/__init__.py",
-        "src/python/__init__.py",
-        "src/python/a/__init__.py",
-        "src/python/a/b/__init__.py",
-        "src/python/a/b/c/d/__init__.py",
-    } == putative_ancestor_files(
-        requested=("__init__.py",),
-        input_files=(
-            "src/python/a/b/foo.py",
-            "src/python/a/b/c/__init__.py",
-            "src/python/a/b/c/d/bar.py",
-            "src/python/a/e/__init__.py",
-        ),
-    )
-
-    assert putative_ancestor_files(requested=("f.py", "f.pyi"), input_files=("subdir/foo.py",)) == {
-        "f.py",
-        "f.pyi",
-        "subdir/f.py",
-        "subdir/f.pyi",
-    }
-    assert putative_ancestor_files(
-        requested=("f.py", "f.pyi"), input_files=("subdir/foo.pyi",)
-    ) == {"f.py", "f.pyi", "subdir/f.py", "subdir/f.pyi"}

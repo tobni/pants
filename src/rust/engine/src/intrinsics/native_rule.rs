@@ -20,8 +20,6 @@
 //!   reach `&T` without a GIL attach. Keeps the same Arc-optimized clone/drop as the
 //!   untyped `Value`.
 
-#![allow(dead_code)]
-
 use std::future::Future;
 
 use pyo3::Python;

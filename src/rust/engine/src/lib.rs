@@ -13,6 +13,8 @@ mod downloads;
 mod externs;
 mod interning;
 mod intrinsics;
+mod native_rules;
+mod native_rules_builtins;
 mod nodes;
 mod python;
 mod scheduler;
