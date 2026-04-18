@@ -161,6 +161,11 @@ def _lookup_annotation(obj: Any, attr: str) -> Any:
 
 
 def _lookup_return_type(func: Callable, check: bool = False) -> Any:
+    # For Rust-native rule trampolines the output type is carried directly on the trampoline;
+    # there is no Python source to inspect. Short-circuit those before falling through to the
+    # annotation-based lookup used for Python `@rule`s.
+    if isinstance(func, RuleCallTrampoline):
+        return func.output_type
     ret = _lookup_annotation(func, "return")
     typ = typing_extensions.get_origin(ret)
     if isinstance(typ, type):

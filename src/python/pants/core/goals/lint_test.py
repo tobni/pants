@@ -384,7 +384,7 @@ def run_lint_rule(
                 "pants.core.goals.lint.partition_files": mock_file_partitioner,
                 "pants.core.goals.lint.lint_batch": mock_lint_partition,
                 "pants.core.goals.lint_goal.run_fixer_or_formatter_as_linter": mock_fix_partition_as_linter,
-                "pants.engine.intrinsics.digest_to_snapshot": lambda __implicitly: EMPTY_SNAPSHOT,
+                "native::digest_to_snapshot": lambda __implicitly: EMPTY_SNAPSHOT,
             },
             union_membership=union_membership,
             # We don't want temporary warnings to interfere with our expected output.

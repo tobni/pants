@@ -22,6 +22,13 @@ use crate::{
 
 static DOUBLE_STAR: &str = "**";
 
+/// Escape the glob metacharacters in `literal` so that, embedded in a `PathGlobs` pattern, it
+/// matches only the literal path. Mirrors the symlink-destination handling in `GlobMatching`,
+/// which uses the same `Pattern::escape` to turn a concrete path back into a single safe glob.
+pub fn escape_glob(literal: &str) -> String {
+    Pattern::escape(literal)
+}
+
 pub static SINGLE_STAR_GLOB: LazyLock<Pattern> = LazyLock::new(|| Pattern::new("*").unwrap());
 pub static DOUBLE_STAR_GLOB: LazyLock<Pattern> =
     LazyLock::new(|| Pattern::new(DOUBLE_STAR).unwrap());

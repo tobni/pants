@@ -330,16 +330,6 @@ impl<T: pyo3::PyClass<Frozen = pyo3::pyclass::boolean_struct::True> + Sync> Valu
     }
 }
 
-impl<T: pyo3::PyClass<Frozen = pyo3::pyclass::boolean_struct::True> + Sync> std::ops::Deref
-    for Value<T>
-{
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        self.0.get()
-    }
-}
-
 impl Value {
     pub fn new(obj: Py<PyAny>) -> Value {
         Value(Arc::new(obj))

@@ -15,10 +15,11 @@ use pyo3::{Bound, IntoPyObject};
 use rule_graph::DependencyKey;
 use workunit_store::{Level, RunningWorkunit, in_workunit};
 
-use super::{NodeKey, NodeResult, Params, select, task_context};
+use super::{NodeKey, NodeResult, Params, rule_scope, select, task_context};
 use crate::context::Context;
 use crate::externs::engine_aware::EngineAwareReturnType;
 use crate::externs::{self, GeneratorInput, GeneratorResponse};
+use crate::native_rules::NativeRuleFnPtr;
 use crate::python::{Failure, Key, TypeId, Value, throw};
 use crate::tasks::{self, Rule};
 
@@ -175,7 +176,7 @@ impl Task {
             match response {
                 GeneratorResponse::NativeCall(call) => {
                     let _blocking_token = workunit.blocking();
-                    let result = (call.call).await;
+                    let result = call.call.await;
                     match result {
                         Ok(value) => {
                             input = GeneratorInput::Arg(value);
@@ -258,13 +259,64 @@ impl Task {
 
         let args = self.args;
 
+        // Native rules take the fast path: the registered Rust fn runs directly on the resolved
+        // deps, inside a `rule_scope` so the body's `implicitly(...)` hops can dispatch through
+        // this rule's own graph edges (with its params and `@union` scope), the same way a Python
+        // `@rule`'s `Get` resolves. No Python call, no generator loop.
+        //
+        // Python `@rule`s invoked positionally (e.g. `await rule(arg)`) have their positional
+        // args in `self.args` and the remaining dependency-resolved args in `deps`. Flatten the
+        // two in declaration order so the native body sees its full argument list regardless of
+        // how Python called the trampoline.
+        if let Some(NativeRuleFnPtr(native_fn)) = self.task.native_fn {
+            let combined_args = if let Some(explicit_args) = args.as_ref() {
+                Python::attach(|py| -> NodeResult<Vec<Value>> {
+                    let explicit_tuple = explicit_args
+                        .value
+                        .bind(py)
+                        .extract::<Bound<'_, PyTuple>>()
+                        .map_err(PyErr::from)?;
+                    let explicit_len = explicit_tuple.len()?;
+                    let mut combined = Vec::with_capacity(explicit_len + deps.len());
+                    for i in 0..explicit_len {
+                        let item = explicit_tuple.get_item(i)?;
+                        combined.push(Value::from(&item));
+                    }
+                    combined.extend(deps);
+                    Ok(combined)
+                })?
+            } else {
+                deps
+            };
+            let result_val = task_context(
+                context.clone(),
+                self.task.side_effecting,
+                &self.side_effected,
+                rule_scope(self.entry, Arc::new(params.clone()), native_fn(combined_args)),
+            )
+            .await?;
+            if self.task.engine_aware_return_type {
+                Python::attach(|py| {
+                    EngineAwareReturnType::update_workunit(workunit, result_val.bind(py))
+                })
+            };
+            return Ok(result_val);
+        }
+
         let (mut result_val, mut result_type) = task_context(
             context.clone(),
             self.task.side_effecting,
             &self.side_effected,
             async move {
                 Python::attach(|py| {
-                    let func = self.task.func.0.value.bind(py);
+                    let func = self
+                        .task
+                        .func
+                        .as_ref()
+                        .expect("Non-native Task must have a Python func")
+                        .0
+                        .value
+                        .bind(py);
 
                     // If there are explicit positional arguments, apply any computed arguments as
                     // keywords. Otherwise, apply computed arguments as positional.
@@ -316,8 +368,8 @@ impl Task {
 
         if result_type != self.task.product {
             return Err(externs::IncorrectProductError::new_err(format!(
-                "{:?} returned a result value that did not satisfy its constraints: {:?}",
-                self.task.func, result_val
+                "{} returned a result value that did not satisfy its constraints: {:?}",
+                self.task.id, result_val
             ))
             .into());
         }
@@ -336,8 +388,8 @@ impl fmt::Debug for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Task {{ func: {}, params: {}, product: {}, cacheable: {} }}",
-            self.task.func, self.params, self.task.product, self.task.cacheable,
+            "Task {{ id: {}, params: {}, product: {}, cacheable: {} }}",
+            self.task.id, self.params, self.task.product, self.task.cacheable,
         )
     }
 }

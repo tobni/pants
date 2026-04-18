@@ -53,11 +53,10 @@ async def create_digest(
     return await native_engine.create_digest(create_digest)
 
 
-@rule
-async def path_globs_to_digest(
-    path_globs: PathGlobs,
-) -> Digest:
-    return await native_engine.path_globs_to_digest(path_globs)
+# `path_globs_to_digest` is a Rust-native rule — the trampoline is installed on the
+# `native_engine` module by the engine at init time. Re-exported here so existing callers
+# (`from pants.engine.intrinsics import path_globs_to_digest`) keep working.
+path_globs_to_digest = native_engine.path_globs_to_digest
 
 
 @rule
@@ -74,9 +73,8 @@ async def download_file(
     return await native_engine.download_file(native_download_file)
 
 
-@rule
-async def digest_to_snapshot(digest: Digest) -> Snapshot:
-    return await native_engine.digest_to_snapshot(digest)
+# `digest_to_snapshot` is a Rust-native rule; trampoline on `native_engine`.
+digest_to_snapshot = native_engine.digest_to_snapshot
 
 
 @rule

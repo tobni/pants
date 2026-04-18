@@ -8,7 +8,9 @@ use futures::FutureExt;
 use futures::future::{BoxFuture, Future};
 use parking_lot::{MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard};
 use pyo3::FromPyObject;
-use pyo3::exceptions::{PyException, PyStopIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyAttributeError, PyException, PyStopIteration, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 use pyo3::sync::{MutexExt, RwLockExt};
@@ -702,10 +704,12 @@ pub struct RuleCallTrampoline {
     rule: Py<PyAny>,
 }
 
-#[pymethods]
 impl RuleCallTrampoline {
-    #[new]
-    fn __new__(
+    /// Construct a trampoline directly from Rust. Used at `native_engine` module-init time to
+    /// expose a Python-callable surface for Rust-native rules. `wrapped` and `rule` are only
+    /// used for introspection (`__name__`, `__line_number__`, ...) — for a native rule,
+    /// `py.None()` is an acceptable stand-in.
+    pub fn new(
         rule_id: PyBackedStr,
         output_type: Py<PyType>,
         wrapped: Py<PyAny>,
@@ -717,6 +721,27 @@ impl RuleCallTrampoline {
             wrapped,
             rule,
         }
+    }
+
+    /// The rule's short name (its `RuleId` with the `native::` prefix stripped). Used as the
+    /// introspection fallback for Rust-native trampolines, which have no `wrapped` function.
+    fn short_name(&self) -> &str {
+        self.rule_id
+            .strip_prefix("native::")
+            .unwrap_or(&self.rule_id)
+    }
+}
+
+#[pymethods]
+impl RuleCallTrampoline {
+    #[new]
+    fn __new__(
+        rule_id: PyBackedStr,
+        output_type: Py<PyType>,
+        wrapped: Py<PyAny>,
+        rule: Py<PyAny>,
+    ) -> Self {
+        Self::new(rule_id, output_type, wrapped, rule)
     }
 
     #[getter]
@@ -750,7 +775,24 @@ impl RuleCallTrampoline {
     /// `__line_number__`, custom attrs, ...) to the wrapped function so introspection that
     /// would've relied on `functools.wraps` still works without a per-instance `__dict__`.
     fn __getattr__<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyAny>> {
-        self.wrapped.bind(py).getattr(name)
+        let wrapped = self.wrapped.bind(py);
+        if wrapped.is_none() {
+            // Rust-native trampoline: no wrapped Python function to forward to. Synthesize the
+            // common introspection attrs from the rule id rather than dereferencing `None`.
+            return match name {
+                "__name__" | "__qualname__" => {
+                    Ok(PyString::new(py, self.short_name()).into_any())
+                }
+                "__module__" => {
+                    Ok(PyString::new(py, "pants.engine.internals.native_engine").into_any())
+                }
+                _ => Err(PyAttributeError::new_err(format!(
+                    "native rule trampoline {:?} has no attribute {name:?}",
+                    &*self.rule_id
+                ))),
+            };
+        }
+        wrapped.getattr(name)
     }
 
     /// `__doc__` lives in the type object's `tp_doc` slot, which shadows `#[getter]` and
@@ -762,7 +804,11 @@ impl RuleCallTrampoline {
     ) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
         if name.to_cow()? == "__doc__" {
-            return slf.wrapped.bind(py).getattr(intern!(py, "__doc__"));
+            let wrapped = slf.wrapped.bind(py);
+            if wrapped.is_none() {
+                return Ok(py.None().into_bound(py));
+            }
+            return wrapped.getattr(intern!(py, "__doc__"));
         }
         unsafe {
             Bound::from_owned_ptr_or_err(
@@ -773,11 +819,12 @@ impl RuleCallTrampoline {
     }
 
     fn __repr__(&self, py: Python) -> PyResult<String> {
-        let name: String = self
-            .wrapped
-            .bind(py)
-            .getattr(intern!(py, "__name__"))?
-            .extract()?;
+        let wrapped = self.wrapped.bind(py);
+        let name: String = if wrapped.is_none() {
+            self.short_name().to_string()
+        } else {
+            wrapped.getattr(intern!(py, "__name__"))?.extract()?
+        };
         Ok(format!("<RuleCallTrampoline for {name}>"))
     }
 }

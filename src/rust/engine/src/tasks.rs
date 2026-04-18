@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, fmt};
 
+use crate::native_rules::{NativeRuleFn, NativeRuleFnPtr};
 use crate::python::{Function, TypeId};
 
 use deepsize::DeepSizeOf;
@@ -18,7 +19,11 @@ impl DisplayForGraph for Rule {
     fn fmt_for_graph(&self, display_args: DisplayForGraphArgs) -> String {
         let task = &self.0;
 
-        let task_name = task.func.full_name();
+        let task_name = task
+            .func
+            .as_ref()
+            .map(Function::full_name)
+            .unwrap_or_else(|| task.id.as_str().to_owned());
         let product = format!("{}", task.product);
 
         let clause_portion = Self::formatted_positional_arguments(
@@ -132,7 +137,12 @@ pub struct Task {
     pub args: Vec<(String, DependencyKey<TypeId>)>,
     pub gets: Vec<DependencyKey<TypeId>>,
     pub masked_types: Vec<TypeId>,
-    pub func: Function,
+    /// Python callable backing this task. `None` for Rust-native rules.
+    pub func: Option<Function>,
+    /// Rust implementation backing this task. `None` for Python `@rule`s. Resolved once at
+    /// bootstrap (in `native_rules::install_into`) so `Task::run_node` dispatches on a plain
+    /// field instead of a per-invocation registry lookup.
+    pub native_fn: Option<NativeRuleFnPtr>,
     pub cacheable: bool,
     pub display_info: DisplayInfo,
 }
@@ -225,9 +235,63 @@ impl Tasks {
             args,
             gets: Vec::new(),
             masked_types,
-            func,
+            func: Some(func),
+            native_fn: None,
             display_info: DisplayInfo { name, desc, level },
         });
+    }
+
+    /// Register a Rust-native rule. The implementation (`native_fn`) is stored directly on the
+    /// task so `Task::run_node` dispatches without a per-call registry lookup.
+    /// Unlike `task_begin`/`task_end`, native rules have no Python function and declare no
+    /// explicit positional args — their body fetches all dependencies through the task
+    /// context (`ctx.get(...)`), mirroring how `@rule` bodies consume deps via `await`s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn task_begin_native(
+        &mut self,
+        rule_id: RuleId,
+        product: TypeId,
+        arg_types: Vec<(String, TypeId)>,
+        masked_types: Vec<TypeId>,
+        native_fn: NativeRuleFn,
+        name: String,
+        desc: Option<String>,
+        level: Level,
+    ) {
+        assert!(
+            self.preparing.is_none(),
+            "Must `end()` the previous task creation before beginning a new one!"
+        );
+        let args = arg_types
+            .into_iter()
+            .map(|(name, typ)| (name, DependencyKey::new(typ)))
+            .collect();
+
+        self.preparing = Some(Task {
+            id: rule_id,
+            cacheable: true,
+            product,
+            side_effecting: false,
+            engine_aware_return_type: false,
+            args,
+            gets: Vec::new(),
+            masked_types,
+            func: None,
+            native_fn: Some(NativeRuleFnPtr(native_fn)),
+            display_info: DisplayInfo { name, desc, level },
+        });
+    }
+
+    /// Add a `Get`-style dependency — `output` reachable from the rule's params plus the provided
+    /// `inputs` — to the task being prepared. Used to wire a native rule's `implicitly::<I, O>(...)`
+    /// hops as real rule-graph edges, so they resolve through the rule's own edges (honoring its
+    /// params and `@union` scope) exactly like a Python `@rule`'s `Get`.
+    pub fn add_get(&mut self, output: TypeId, inputs: Vec<TypeId>) {
+        self.preparing
+            .as_mut()
+            .expect("Must `begin()` a task creation before adding gets!")
+            .gets
+            .push(DependencyKey::new(output).provided_params(inputs));
     }
 
     pub fn add_call(

@@ -20,68 +20,41 @@
 //!   reach `&T` without a GIL attach. Keeps the same Arc-optimized clone/drop as the
 //!   untyped `Value`.
 
-#![allow(dead_code)]
-
 use std::future::Future;
-
-use pyo3::Python;
 
 use crate::externs::PyGeneratorResponseNativeCall;
 use crate::nodes::NodeResult;
 use crate::python::Value;
 
-/// How a native rule stores its Rust output back as a Python value.
-pub trait NativeRuleOutput: Sized + Send + 'static {
-    fn store(self, py: Python<'_>) -> NodeResult<Value>;
-}
-
-impl NativeRuleOutput for Value {
-    fn store(self, _py: Python<'_>) -> NodeResult<Value> {
-        Ok(self)
-    }
-}
-
 /// Adapter for a native rule taking zero Python-side arguments.
-pub fn native_call0<O, F, Fut>(body: F) -> PyGeneratorResponseNativeCall
+pub fn native_call0<F, Fut>(body: F) -> PyGeneratorResponseNativeCall
 where
-    O: NativeRuleOutput,
     F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = NodeResult<O>> + Send + 'static,
+    Fut: Future<Output = NodeResult<Value>> + Send + 'static,
 {
-    PyGeneratorResponseNativeCall::new(async move {
-        let out = body().await?;
-        Python::attach(|py| O::store(out, py))
-    })
+    PyGeneratorResponseNativeCall::new(body())
 }
 
 /// Adapter for a native rule taking one Python-side argument.
 ///
 /// `I` is whatever PyO3 extracted at the adapter boundary: `Value` for the untyped passthrough,
 /// or `Py<T>` for a frozen pyclass — the harness just forwards it to the body.
-pub fn native_call<I, O, F, Fut>(input: I, body: F) -> PyGeneratorResponseNativeCall
+pub fn native_call<I, F, Fut>(input: I, body: F) -> PyGeneratorResponseNativeCall
 where
     I: Send + 'static,
-    O: NativeRuleOutput,
     F: FnOnce(I) -> Fut + Send + 'static,
-    Fut: Future<Output = NodeResult<O>> + Send + 'static,
+    Fut: Future<Output = NodeResult<Value>> + Send + 'static,
 {
-    PyGeneratorResponseNativeCall::new(async move {
-        let out = body(input).await?;
-        Python::attach(|py| O::store(out, py))
-    })
+    PyGeneratorResponseNativeCall::new(body(input))
 }
 
 /// Adapter for a native rule taking two Python-side arguments.
-pub fn native_call2<I1, I2, O, F, Fut>(a: I1, b: I2, body: F) -> PyGeneratorResponseNativeCall
+pub fn native_call2<I1, I2, F, Fut>(a: I1, b: I2, body: F) -> PyGeneratorResponseNativeCall
 where
     I1: Send + 'static,
     I2: Send + 'static,
-    O: NativeRuleOutput,
     F: FnOnce(I1, I2) -> Fut + Send + 'static,
-    Fut: Future<Output = NodeResult<O>> + Send + 'static,
+    Fut: Future<Output = NodeResult<Value>> + Send + 'static,
 {
-    PyGeneratorResponseNativeCall::new(async move {
-        let out = body(a, b).await?;
-        Python::attach(|py| O::store(out, py))
-    })
+    PyGeneratorResponseNativeCall::new(body(a, b))
 }

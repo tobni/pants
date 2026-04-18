@@ -34,6 +34,7 @@ pub use crate::directory::{
 pub use crate::gitignore::GitignoreStyleExcludes;
 pub use crate::glob_matching::{
     DOUBLE_STAR_GLOB, FilespecMatcher, GlobMatching, PathGlob, PreparedPathGlobs, SINGLE_STAR_GLOB,
+    escape_glob,
 };
 #[cfg(unix)]
 use crate::posixfs::PosixFS;

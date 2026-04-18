@@ -42,6 +42,7 @@ libc = { workspace = true }
 log = { workspace = true }
 logging = { path = "../logging" }
 nailgun = { path = "../nailgun" }
+native_rule_macro = { path = "native_rule_macro" }
 num_enum = { workspace = true }
 options = { path = "../options" }
 options_pants_ng = { path = "../pants_ng/options" }

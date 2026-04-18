@@ -6,11 +6,12 @@ use pyo3::{Bound, PyResult, Python};
 
 // Shared harness for native rules.
 pub mod native_rule;
+// Rule-graph boundary types + `implicitly` for Rust-side call-by-name dispatch.
+pub mod rule_type;
 
 // Sub-modules with intrinsic implementations.
-mod ancestor_files;
 mod dep_inference;
-mod digests;
+pub(crate) mod digests;
 mod docker;
 mod interactive_process;
 mod process;
@@ -19,7 +20,6 @@ mod values;
 pub use interactive_process::interactive_process_inner;
 
 pub fn register(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    ancestor_files::register(py, m)?;
     dep_inference::register(py, m)?;
     digests::register(py, m)?;
     docker::register(py, m)?;

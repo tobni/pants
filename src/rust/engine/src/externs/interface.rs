@@ -83,6 +83,12 @@ fn native_engine(py: Python, m: &Bound<'_, PyModule>) -> PyO3Result<()> {
     externs::unions::register(py, m)?;
     externs::frozendict::register(py, m)?;
 
+    // Populate the native rule registry and install a `RuleCallTrampoline` on this module for
+    // each entry. Python callers then `await native_engine.<rule>(input)` and the engine
+    // dispatches through the rule graph, hitting the `native_fn` branch in `Task::run_node`.
+    crate::native_rules_builtins::register_all();
+    crate::native_rules::install_trampolines(py, m)?;
+
     m.add("PollTimeout", py.get_type::<PollTimeout>())?;
 
     m.add_class::<PyExecutionRequest>()?;
@@ -788,12 +794,18 @@ fn scheduler_create<'py>(
         .lock_py_attached(py)
         .take()
         .ok_or_else(|| PyException::new_err("An instance of PyTypes may only be used once."))?;
-    let tasks = py_tasks
+    let mut tasks = py_tasks
         .borrow()
         .0
         .lock_py_attached(py)
         .replace(Tasks::new())
         .unwrap();
+
+    // Install Rust-native rules into the graph alongside Python `@rule`s. The registry was
+    // populated during `#[pymodule]` init; here we translate each entry into `Tasks` calls
+    // (including the `QueryRule`s the `#[native_rule]` macro AST-scanned from each body) so
+    // chain resolution Just Works — no hardcoded per-rule graph declarations.
+    crate::native_rules::install_into(py, &mut tasks);
 
     // NOTE: Enter the Tokio runtime so that libraries like Tonic (for gRPC) are able to
     // use `tokio::spawn` since Python does not setup Tokio for the main thread. This also

@@ -58,6 +58,8 @@ pub use self::task::Task;
 tokio::task_local! {
     static TASK_SIDE_EFFECTED: Arc<AtomicBool>;
     static TASK_CONTEXT: Arc<Context>;
+    static TASK_RULE_ENTRY: Intern<rule_graph::Entry<Rule>>;
+    static TASK_RULE_PARAMS: Arc<Params>;
 }
 
 pub fn task_side_effected() -> Result<(), String> {
@@ -76,6 +78,18 @@ pub fn task_get_context() -> Context {
     TASK_CONTEXT.with(|c| (**c).clone())
 }
 
+/// The rule-graph entry of the rule currently executing, if called from within a rule body.
+/// Used by `implicitly(...)` to dispatch a hop through the calling rule's own edges.
+pub fn task_get_rule_entry() -> Option<Intern<rule_graph::Entry<Rule>>> {
+    TASK_RULE_ENTRY.try_with(|e| *e).ok()
+}
+
+/// The params in scope for the rule currently executing, if called from within a rule body.
+/// Threaded into `implicitly(...)` resolution so a hop can use the caller's ambient params.
+pub fn task_get_rule_params() -> Option<Arc<Params>> {
+    TASK_RULE_PARAMS.try_with(|p| p.clone()).ok()
+}
+
 pub async fn task_context<T, F: future::Future<Output = T>>(
     context: Context,
     is_side_effecting: bool,
@@ -90,6 +104,20 @@ pub async fn task_context<T, F: future::Future<Output = T>>(
     } else {
         TASK_CONTEXT.scope(context, f).await
     }
+}
+
+/// Scope execution of `f` with the rule-graph entry and params identifying the currently-executing
+/// rule, making them visible to `task_get_rule_entry`/`task_get_rule_params`. `implicitly(...)`
+/// uses them to dispatch hops through the caller's edges (so the caller's params and `@union`
+/// scope apply), mirroring how a Python `@rule`'s `Get` resolves.
+pub async fn rule_scope<T, F: future::Future<Output = T>>(
+    entry: Intern<rule_graph::Entry<Rule>>,
+    params: Arc<Params>,
+    f: F,
+) -> T {
+    TASK_RULE_ENTRY
+        .scope(entry, TASK_RULE_PARAMS.scope(params, f))
+        .await
 }
 
 pub type NodeResult<T> = Result<T, Failure>;
@@ -150,7 +178,7 @@ impl StoreFileByDigest<Failure> for Context {
     }
 }
 
-async fn select(
+pub async fn select(
     context: Context,
     args: Option<Key>,
     args_arity: u16,

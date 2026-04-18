@@ -1099,7 +1099,7 @@ def test_build_docker_image_packages_local_output_digest(rule_runner: RuleRunner
             "pants.engine.intrinsics.execute_process": mock_execute_process,
             "pants.engine.intrinsics.digest_subset_to_digest": mock_digest_subset_to_digest,
             "pants.engine.intrinsics.add_prefix": mock_add_prefix,
-            "pants.engine.intrinsics.digest_to_snapshot": mock_digest_to_snapshot,
+            "native::digest_to_snapshot": mock_digest_to_snapshot,
         },
         show_warnings=False,
     )
@@ -1222,7 +1222,7 @@ def test_docker_output_capture_checks_outputs_match_mode(
         "pants.engine.intrinsics.execute_process": mock_execute_process,
         "pants.engine.intrinsics.digest_subset_to_digest": lambda _: EMPTY_DIGEST,
         "pants.engine.intrinsics.add_prefix": mock_add_prefix,
-        "pants.engine.intrinsics.digest_to_snapshot": mock_digest_to_snapshot,
+        "native::digest_to_snapshot": mock_digest_to_snapshot,
         "pants.engine.internals.graph.resolve_target": lambda _: WrappedTarget(tgt),
     }
     rule_args = [
